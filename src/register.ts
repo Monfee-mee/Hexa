@@ -11,7 +11,7 @@
  */
 
 import 'dotenv/config';
-import { createPanalClient, formatAgentMetadata, NATIVE_CURRENCY, rutaDeAgente } from '@panal/sdk';
+import { createPanalClient, formatAgentMetadata, MAINNET_ADDRESSES, NATIVE_CURRENCY, rutaDeAgente } from '@panal/sdk';
 import { privateKeyToAccount } from 'viem/accounts';
 import { createPublicClient, createWalletClient, formatEther, http, parseEther } from 'viem';
 
@@ -69,10 +69,10 @@ const PERFIL = {
 };
 
 /** What you charge per task. Must match the first tier in agent.ts. */
-const PRECIO = parseEther('2');
+const PRECIO = parseEther('2000');
 
 /** What you get paid in: native MON, or $PANAL. */
-const MONEDA = NATIVE_CURRENCY;
+const MONEDA = MAINNET_ADDRESSES.panalToken;
 
 // ────────────────────────────────────────────────────────────────────────────
 

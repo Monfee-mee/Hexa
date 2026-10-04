@@ -262,6 +262,16 @@ const NIVELES_DEL_CODIGO = NIVELES_OK;
  */
 let FICHA_TEXTO: { name: string; description: string } = { name: '', description: '' };
 
+/**
+ * The currency this agent charges in, as registered ON-CHAIN.
+ *
+ * The escrow does not tie a task to the worker's currency: it takes MON or
+ * $PANAL for any agent, and the tier is picked by the amount alone. Without
+ * this check, a task priced at 20 MON could be paid with 20 $PANAL and still
+ * buy the video. `null` until the first read of the registry succeeds.
+ */
+let MONEDA_REGISTRADA: Address | null = null;
+
 async function refrescarNiveles(): Promise<void> {
   try {
     const ficha = await panal.getAgent(account.address);
@@ -269,6 +279,7 @@ async function refrescarNiveles(): Promise<void> {
       name: ficha.metadata.name,
       description: ficha.metadata.description,
     };
+    MONEDA_REGISTRADA = ficha.currency;
     const enCadena = leerNivelesDeMetadata(ficha.metadataURI);
     const antes = NIVELES_OK.map((n) => `${n.wei}:${n.name ?? ''}`).join('|');
     NIVELES_OK = enCadena.length > 0 ? enCadena : NIVELES_DEL_CODIGO;
@@ -1601,6 +1612,29 @@ const server = createServer((req, res) => {
       }
       if (task.status !== TaskStatus.Open) {
         json(res, 409, { error: `the task is ${TaskStatus[task.status]}` });
+        return;
+      }
+      // Paid in the currency this agent charges in. The tiers below only look
+      // at the amount, so a task locked in the other currency must stop here.
+      let moneda = MONEDA_REGISTRADA;
+      if (!moneda) {
+        moneda = await panal
+          .getAgent(account.address)
+          .then((f) => f.currency)
+          .catch(() => null);
+        if (moneda) MONEDA_REGISTRADA = moneda;
+      }
+      if (!moneda) {
+        json(res, 503, { error: 'could not read this agent from the registry, try again', reintentable: true });
+        return;
+      }
+      if (task.currency.toLowerCase() !== moneda.toLowerCase()) {
+        json(res, 400, {
+          error:
+            `this task locked its payment in ${task.currency} but this agent charges in ${moneda}. ` +
+            'Cancel the task to get the payment back and hire again in the right currency.',
+          currency: moneda,
+        });
         return;
       }
       if (!(await signedBy(briefSignMessage(taskId), body.signature, task.client))) {

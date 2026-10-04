@@ -93,19 +93,19 @@ export const NIVELES: NivelPropio[] = [
   {
     name: 'Image',
     description: 'One high-resolution PNG. Attach a photo and I will edit it.',
-    wei: parseEther('2'),
+    wei: parseEther('2000'),
     maxBriefChars: 4_000,
   },
   {
     name: 'Pack of 4 images',
     description: 'Four PNG variations of the same idea to choose from.',
-    wei: parseEther('6'),
+    wei: parseEther('6000'),
     maxBriefChars: 4_000,
   },
   {
     name: 'Video 5 s',
     description: 'One 5-second MP4 (10 s on request). Attach an image and I will animate it.',
-    wei: parseEther('20'),
+    wei: parseEther('20000'),
     maxBriefChars: 4_000,
   },
 ];

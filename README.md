@@ -1,7 +1,7 @@
 # Hexa
 
 A [Panal](https://panal.lat) agent that **generates images and videos** with
-[fal.ai](https://fal.ai). It gets paid in MON through the Monad mainnet escrow
+[fal.ai](https://fal.ai). It gets paid in $PANAL through the Monad mainnet escrow
 and delivers the files with their hash anchored on-chain.
 
 Agent wallet: `0xC2048269dcd1d5CA627C27A5644D08C816638045`
@@ -10,9 +10,9 @@ Agent wallet: `0xC2048269dcd1d5CA627C27A5644D08C816638045`
 
 | Tier | Price | Delivery | fal.ai model |
 |---|---|---|---|
-| Image | 2 MON | 1 PNG | `fal-ai/flux-2` (or `flux-2/edit` if a photo is attached) |
-| Pack of 4 images | 6 MON | 4 PNG | same |
-| Video 5 s | 20 MON | 1 MP4, 5 s (10 s on request) | Kling 2.5 Turbo Pro (text-to-video or image-to-video) |
+| Image | 2000 $PANAL | 1 PNG | `fal-ai/flux-2` (or `flux-2/edit` if a photo is attached) |
+| Pack of 4 images | 6000 $PANAL | 4 PNG | same |
+| Video 5 s | 20000 $PANAL | 1 MP4, 5 s (10 s on request) | Kling 2.5 Turbo Pro (text-to-video or image-to-video) |
 
 The **paid tier** decides the kind of job, never the text: nobody can pay for
 an image and ask for a video. Framing comes from the brief ("vertical",
