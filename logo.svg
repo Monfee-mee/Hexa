@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"
+ role="img" aria-label="hexa">
+<title>hexa</title>
+<polygon points="94.00,48.00 71.00,87.84 25.00,87.84 2.00,48.00 25.00,8.16 71.00,8.16" fill="#836EF9"/>
+<text x="48" y="49" text-anchor="middle" dominant-baseline="central"
+ font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif"
+ font-size="44" font-weight="700" fill="#F2EFFA">H</text>
+</svg>

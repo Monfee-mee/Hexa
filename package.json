@@ -1,0 +1,25 @@
+{
+  "name": "hexa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "register": "tsx src/register.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.10.1",
+    "@panal/sdk": "^0.18.0",
+    "dotenv": "^17.0.0",
+    "tsx": "^4.19.0",
+    "unpdf": "^1.8.1",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
