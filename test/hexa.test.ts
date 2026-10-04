@@ -80,6 +80,11 @@ test('framing from the brief', () => {
   assert.equal(pickFraming('YouTube cover', 'image'), 'landscape');
   assert.equal(pickFraming('a logo for my cafe', 'image'), 'square');
   assert.equal(pickFraming('a dog running', 'video'), 'landscape');
+  // What the client states outright wins over platform words.
+  assert.equal(pickFraming('square 1:1 cover for my YouTube channel', 'image'), 'square');
+  assert.equal(pickFraming('a clip for YouTube Shorts', 'video'), 'portrait');
+  // "short" as an adjective is not a YouTube Short.
+  assert.equal(pickFraming('a short animated version of the logo', 'image'), 'square');
 });
 
 test('builds the call for each model', () => {
@@ -130,6 +135,29 @@ test('image job: delivers a PNG and always answers in English', async () => {
   assert.equal(r.files?.[0]?.name, 'hexa.png');
   assert.match(r.text, /^Here is your image: hexa\.png\./);
   assert.doesNotMatch(r.text, /\*\*|^#/m);
+});
+
+test('image tier with a brief that also wants a video: square PNG and says how to get the video', async () => {
+  // The brief of task #102, word for word.
+  const brief =
+    'I need a retro synthwave logo for my new podcast called "Neon Nights". It should feature a glowing sun and a palm tree ' +
+    'silhouette in purple and pink tones, square 1:1 format. Please deliver it as a PNG. Also create a short animated version ' +
+    'of the logo for a 5-second intro, delivered as an MP4.';
+  const { fal, calls } = fakeFal({ images: [{ url: 'https://fal.media/a.png', content_type: 'image/png' }] });
+  const r = await runJob(brief, ctx(), { fal, models: DEFAULT_MODELS, download });
+  if (typeof r === 'string') return assert.fail('expected files');
+  assert.equal(calls[0]!.endpoint, 'fal-ai/flux-2');
+  assert.equal(calls[0]!.input.image_size, 'square_hd');
+  assert.equal(r.files?.length, 1);
+  assert.match(r.text, /also asks for a video/);
+  assert.match(r.text, /"Video 5 s" tier/);
+});
+
+test('a plain image brief carries no video note', async () => {
+  const { fal } = fakeFal({ images: [{ url: 'https://fal.media/a.png', content_type: 'image/png' }] });
+  const r = await runJob('A neon city at night', ctx(), { fal, models: DEFAULT_MODELS, download });
+  if (typeof r === 'string') return assert.fail('expected files');
+  assert.doesNotMatch(r.text, /asks for a video/);
 });
 
 test('pack: asks for four images', async () => {

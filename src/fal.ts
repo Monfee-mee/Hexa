@@ -85,7 +85,13 @@ export const MAX_PROMPT = 2_500;
 //  Reading the brief
 // ────────────────────────────────────────────────────────────────────────────
 
-const ASKS_FOR_VIDEO = /\b(v[ií]deos?|clips?|animaci[oó]n|anima(r|lo|la)?|animate|animation|movie|reels?|tiktok|motion)\b/i;
+const ASKS_FOR_VIDEO =
+  /\b(v[ií]deos?|clips?|animaci[oó]n|anima(r|lo|la)?|animad[oa]s?|animated?|animation|movie|reels?|tiktok|motion|mp4)\b/i;
+
+/** Whether the brief asks for a video, whatever tier was paid for. */
+export function asksForVideo(brief: string): boolean {
+  return ASKS_FOR_VIDEO.test(brief);
+}
 
 /**
  * Image or video?
@@ -106,9 +112,17 @@ export function pickCount(tier: { name: string } | null): number {
 }
 
 export function pickFraming(brief: string, kind: Kind): Framing {
-  if (/\b(9:16|vertical|portrait|retrato|reels?|tiktok|stor(y|ies)|historia|shorts?|m[oó]vil|phone)\b/i.test(brief)) return 'portrait';
-  if (/\b(16:9|horizontal|landscape|paisaje|youtube|banner|portada|cover|header|cabecera|wide|panor[aá]mic)/i.test(brief)) return 'landscape';
-  if (/\b(1:1|cuadrad[oa]|square|logo|avatar|icon[oa]?|perfil|profile)\b/i.test(brief)) return 'square';
+  // What the client states outright wins over what a platform suggests: a
+  // "square 1:1" logo must not turn vertical because the brief also says
+  // "short" or "reel" somewhere else.
+  if (/\b1:1\b|\b(cuadrad[oa]s?|square)\b/i.test(brief)) return 'square';
+  if (/\b9:16\b|\b(vertical|portrait|retrato)\b/i.test(brief)) return 'portrait';
+  if (/\b16:9\b|\b(horizontal|landscape|paisaje)\b/i.test(brief)) return 'landscape';
+  // Then the platform. `shorts` only in plural: "a short animated version" is
+  // not a YouTube Short.
+  if (/\b(reels?|tiktok|stor(y|ies)|historia|shorts|m[oó]vil|phone)\b/i.test(brief)) return 'portrait';
+  if (/\b(youtube|banner|portada|cover|header|cabecera|wide|panor[aá]mic)/i.test(brief)) return 'landscape';
+  if (/\b(logo|avatar|icon[oa]?|perfil|profile)\b/i.test(brief)) return 'square';
   // No hint: video looks best wide, and a square image works anywhere.
   return kind === 'video' ? 'landscape' : 'square';
 }

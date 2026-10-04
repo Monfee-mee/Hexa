@@ -17,6 +17,7 @@ import { llmChat, resolverLlm, type CallEnvelope, type LlmConfig } from '@panal/
 import type { AdjuntoRecibido } from './adjuntos.js';
 import type { Turno } from './memoria.js';
 import {
+  asksForVideo,
   falClient,
   generate,
   modelsFromEnv,
@@ -181,9 +182,26 @@ export async function runJob(brief: string, ctx: TaskContext, deps: Deps): Promi
       output.files.map((f) => `${f.name} ${f.data.byteLength} B`).join(', '),
   );
   return {
-    text: deliveryText(job, output),
+    text: deliveryText(job, output, videoNotPaid(brief, kind, ctx)),
     files: output.files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })),
   };
+}
+
+/**
+ * The brief asks for a video but the task paid for images.
+ *
+ * The tier decides, so only images go out. Saying it in the delivery keeps a
+ * client who wrote "and an MP4" from thinking half the order was ignored, and
+ * tells them how to get the rest.
+ */
+function videoNotPaid(brief: string, kind: Kind, ctx: TaskContext): string | null {
+  if (ctx.taskId === null || kind !== 'image' || !asksForVideo(brief)) return null;
+  const video = NIVELES.find((n) => /video/i.test(n.name));
+  if (!video) return null;
+  return (
+    `Your request also asks for a video. This task paid for the ${ctx.nivel?.name ?? 'image'} tier, ` +
+    `which delivers images only. For the animated version, hire the "${video.name}" tier and attach this image: Hexa will animate it.`
+  );
 }
 
 function mimeOf(a: AdjuntoRecibido): string {
@@ -235,7 +253,7 @@ async function preparePrompt(brief: string, kind: Kind, withReference: boolean):
 }
 
 /** Text that goes with the files. It is anchored on-chain: short and exact. */
-function deliveryText(job: Job, out: Output): string {
+function deliveryText(job: Job, out: Output, note: string | null = null): string {
   const names = out.files.map((f) => f.name).join(', ');
   const lines: string[] = [];
   if (job.kind === 'video') {
@@ -246,6 +264,7 @@ function deliveryText(job: Job, out: Output): string {
       `${n === 1 ? 'Here is your image' : `Here are your ${n} images`}${job.reference ? ', edited from your photo' : ''}: ${names}.`,
     );
   }
+  if (note) lines.push(note);
   lines.push('Prompt used: ' + job.prompt);
   lines.push('Model: ' + out.model + ' (fal.ai)');
   if (out.censored > 0) {
