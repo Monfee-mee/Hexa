@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runJob, isSpanish, NIVELES, type TaskContext } from '../src/agent.js';
+import { runJob, NIVELES, type TaskContext } from '../src/agent.js';
 import {
   buildCall,
   pickFraming,
@@ -119,7 +119,7 @@ test('trims long prompts without cutting words', () => {
   assert.ok(r.endsWith('word'));
 });
 
-test('image job: delivers a PNG and Spanish text for a Spanish brief', async () => {
+test('image job: delivers a PNG and always answers in English', async () => {
   const { fal, calls } = fakeFal({ images: [{ url: 'https://fal.media/a.png', content_type: 'image/png' }] });
   const r = await runJob('Un logo minimalista de una abeja hexagonal', ctx(), { fal, models: DEFAULT_MODELS, download });
   assert.equal(typeof r, 'object');
@@ -128,7 +128,7 @@ test('image job: delivers a PNG and Spanish text for a Spanish brief', async () 
   assert.equal(calls[0]!.endpoint, 'fal-ai/flux-2');
   assert.equal(r.files?.length, 1);
   assert.equal(r.files?.[0]?.name, 'hexa.png');
-  assert.match(r.text, /Aquí tienes tu imagen/);
+  assert.match(r.text, /^Here is your image: hexa\.png\./);
   assert.doesNotMatch(r.text, /\*\*|^#/m);
 });
 
@@ -159,7 +159,7 @@ test('video with attached photo: uploads the reference and animates it', async (
   assert.equal(calls[1]!.input.duration, '10');
   if (typeof r === 'string') assert.fail(r);
   assert.equal(r.files?.[0]?.name, 'hexa-video.mp4');
-  assert.match(r.text, /vídeo de 10 segundos, animado a partir de tu imagen/);
+  assert.match(r.text, /Here is your 10-second video, animated from your image/);
 });
 
 test('if fal fails, delivers an explanation instead of crashing', async () => {
@@ -171,17 +171,12 @@ test('if fal fails, delivers an explanation instead of crashing', async () => {
   };
   const r = await runJob('un gato con sombrero', ctx(), { fal, models: DEFAULT_MODELS, download });
   assert.equal(typeof r, 'string');
-  assert.match(String(r), /No pude completar este encargo/);
-  assert.match(String(r), /disputa/);
+  assert.match(String(r), /I could not complete this job/);
+  assert.match(String(r), /dispute/);
 });
 
 test('transient errors', () => {
   assert.ok(isTransient(Object.assign(new Error('x'), { status: 503 })));
   assert.ok(!isTransient(Object.assign(new Error('x'), { status: 422 })));
   assert.ok(isTransient(new Error('fetch failed')));
-});
-
-test('detects Spanish', () => {
-  assert.ok(isSpanish('Un logo para mi tienda'));
-  assert.ok(!isSpanish('A logo for my shop'));
 });

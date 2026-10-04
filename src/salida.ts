@@ -1,18 +1,18 @@
 /**
- * Devolverle al cliente el archivo que pidió.
+ * Handing the client back the file they asked for.
  *
- * Un agente entrega TEXTO: es lo que se le enseña al cliente y lo que se ancla
- * en la cadena. Pero mucha gente no quiere texto en una caja, quiere un archivo
- * que abrir, reenviar o imprimir. Esto convierte lo uno en lo otro.
+ * An agent delivers TEXT: it is what the client is shown and what is anchored
+ * on-chain. But many people do not want text in a box, they want a file to
+ * open, forward or print. This turns one into the other.
  *
- * QUÉ SE ENTREGA SIGUE SIENDO EL TEXTO. El archivo va ADEMÁS, nunca en lugar
- * de él: su hash se cuela en la entrega y acaba en la cadena, así que el
- * cliente puede demostrar que el archivo que se baja es exactamente el que se
- * le entregó. Sustituir el texto por el archivo rompería eso.
+ * WHAT IS DELIVERED IS STILL THE TEXT. The file goes IN ADDITION, never
+ * instead of it: its hash slips into the delivery and ends up on-chain, so the
+ * client can prove the file they download is exactly the one delivered.
+ * Replacing the text with the file would break that.
  *
- * Y NO SE ADJUNTA SI NO LO PIDIÓ. A varios de estos agentes los llama otro
- * programa que va a leer la respuesta; colgarle un PDF que nadie va a abrir es
- * peso y confusión.
+ * AND NOTHING IS ATTACHED UNLESS ASKED FOR. Several of these agents are called
+ * by another program that is going to read the answer; hanging a PDF nobody
+ * will open on it is weight and confusion.
  */
 
 import { llmChat, resolverLlm, stripFilesManifest } from '@panal/sdk';
@@ -28,28 +28,29 @@ export interface ArchivoDeSalida {
 }
 
 /**
- * Qué formato pidió, si es que pidió alguno.
+ * Which format they asked for, if any.
  *
- * Se mira el ENCARGO, no la respuesta: es donde la persona lo dice. Y se busca
- * en varios idiomas, porque el mercado no es sólo hispanohablante — un encargo
- * en inglés que pide «as a Word document» tiene que salir en Word.
+ * It looks at the BRIEF, not the answer: that is where the person says it.
+ * And it searches in several languages, because the market is not only
+ * Spanish-speaking — an English brief asking "as a Word document" has to come
+ * out in Word.
  *
- * Devuelve `null` cuando no pide nada, que es el caso normal.
+ * Returns `null` when nothing is asked for, which is the normal case.
  */
 export function formatoPedido(brief: string): Formato | null {
-  // El manifiesto de adjuntos NO es lo que pidio el cliente: es contabilidad
-  // del protocolo, y va pegada al FINAL del brief. Sin quitarla, sus lineas
-  // `name:` y `mime:` son las ultimas menciones de un formato que hay en el
-  // texto, y esta funcion se queda justamente con la ultima.
+  // The attachments manifest is NOT what the client asked for: it is protocol
+  // bookkeeping, and it is appended at the END of the brief. Without removing
+  // it, its `name:` and `mime:` lines are the last mentions of a format in the
+  // text, and this function keeps precisely the last one.
   //
-  // El efecto es que el adjunto elige el formato de SALIDA. Comprobado en un
-  // encargo real de mainnet (#67): el cliente pidio JSON, adjunto un `.txt`, y
-  // el manifiesto —`name: pedidos n.txt`, `mime: text/plain`— gano al «devuelve
-  // solo el JSON» que estaba escrito antes. Se entrego un .txt.
+  // The effect is that the attachment picks the OUTPUT format. Seen on a real
+  // mainnet job (#67): the client asked for JSON, attached a `.txt`, and the
+  // manifest —`name: pedidos n.txt`, `mime: text/plain`— beat the "return only
+  // the JSON" written earlier. A .txt was delivered.
   //
-  // No es raro ni un caso de laboratorio: casi todo adjunto lleva en el nombre
-  // una extension que aqui es un formato. Adjuntar un PDF hacia que la entrega
-  // fuera un PDF, se pidiera lo que se pidiera.
+  // Not rare nor a lab case: almost every attachment carries in its name an
+  // extension that is a format here. Attaching a PDF made the delivery a PDF,
+  // whatever was asked for.
   const t = stripFilesManifest(brief).toLowerCase();
   const mencion: { formato: Formato; en: number }[] = [];
 
@@ -58,27 +59,27 @@ export function formatoPedido(brief: string): Formato | null {
   }
   if (mencion.length === 0) return null;
 
-  // Las que hablan del archivo que ENTRÓ no cuentan. Sin esto, «lee el PDF
-  // adjunto y devuélvemelo en Word» entregaba un PDF: el primer formato que
-  // aparecía era el de la entrada. Pasó en una prueba de punta a punta, que es
-  // donde se ve y no en una frase inventada.
+  // The ones talking about the file that CAME IN do not count. Without this,
+  // "read the attached PDF and give it back to me in Word" delivered a PDF:
+  // the first format mentioned was the input's. It happened in an end-to-end
+  // test, which is where it shows up, not in a made-up sentence.
   const deSalida = mencion.filter((x) => !esDeEntrada(t, x.en));
   if (deSalida.length === 0) return null;
 
-  // Si alguna viene precedida de un verbo de entrega, ésa es la buena.
+  // If one is preceded by a delivery verb, that is the right one.
   const pedida = deSalida.find((x) => ENTREGA.test(t.slice(Math.max(0, x.en - 40), x.en)));
   if (pedida) return pedida.formato;
 
-  // Y si no, la ÚLTIMA: el formato de salida se suele decir al final.
+  // Otherwise the LAST one: the output format is usually stated at the end.
   return deSalida[deSalida.length - 1]!.formato;
 }
 
-/** Cómo se nombra cada formato, en los idiomas del mercado. */
+/** How each format is named, in the market's languages. */
 const PATRONES: [Formato, RegExp][] = [
   ['pdf', /\bpdfs?\b/g],
   ['docx', /\bdocx?\b|\bword\b/g],
-  // «hoja de cálculo» y «spreadsheet» van a Excel, no a CSV: quien lo pide así
-  // quiere abrirlo y sumar, no un archivo de texto con comas.
+  // "hoja de cálculo" and "spreadsheet" go to Excel, not CSV: whoever asks
+  // like that wants to open it and add things up, not a text file with commas.
   ['xlsx', /\bxlsx?\b|\bexcel\b|hoja de c[aá]lculo|\bspreadsheet\b/g],
   ['csv', /\bcsvs?\b/g],
   ['json', /\bjson\b/g],
@@ -86,21 +87,21 @@ const PATRONES: [Formato, RegExp][] = [
   ['txt', /\btxt\b|texto plano|plain text|archivo de texto|text file/g],
 ];
 
-/** Que se lo den a uno: lo que distingue pedir un formato de nombrarlo. */
+/** Being handed something: what tells asking for a format from naming it. */
 const ENTREGA =
   /\b(devu[eé]lve|dame|d[aá]melo|entr[eé]ga|env[ií]a|quiero|genera|crea|exporta|conviert|p[aá]sa|as an?|in|into|return|output|format[oe]?|como)\b[^.]{0,30}$/;
 
-/** Y lo que delata que se habla del archivo que MANDÓ el cliente. */
+/** And what gives away that it is about the file the client SENT. */
 const ENTRADA = /\b(adjunt\w*|attach\w*|subid\w*|uploaded|este|esta|el|la|mi|my|the)\b/;
 
 function esDeEntrada(t: string, en: number): boolean {
   const antes = t.slice(Math.max(0, en - 18), en);
   const despues = t.slice(en, en + 30);
-  // «el PDF adjunto», «the attached pdf», «mi word»: se habla de lo que entró.
+  // "el PDF adjunto", "the attached pdf", "mi word": it is about what came in.
   return /\badjunt|attach|\bsub[ií]|uploaded|que te (mand|pas|envi)/.test(despues) || (ENTRADA.test(antes) && /\badjunt|attach/.test(despues));
 }
 
-/** La extensión y el tipo de cada formato. */
+/** Extension and type of each format. */
 const TIPOS: Record<Formato, { ext: string; mime: string }> = {
   pdf: { ext: 'pdf', mime: 'application/pdf' },
   docx: {
@@ -118,10 +119,10 @@ const TIPOS: Record<Formato, { ext: string; mime: string }> = {
 };
 
 /**
- * Lo que XML no admite tal cual.
+ * What XML does not accept as is.
  *
- * Los caracteres de control se quitan además de escapar: uno solo hace que
- * Word se niegue a abrir el archivo ENTERO, sin decir cuál era.
+ * Control characters are removed on top of escaping: a single one makes Word
+ * refuse to open the WHOLE file, without saying which one it was.
  */
 function escaparXml(s: string): string {
   return s
@@ -129,16 +130,16 @@ function escaparXml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    // Los de control no son válidos en XML, ni siquiera escapados.
-    // eslint-disable-next-line no-control-regex -- son justo los que hay que quitar
+    // Control characters are not valid in XML, not even escaped.
+    // eslint-disable-next-line no-control-regex -- they are exactly the ones to remove
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
 }
 
 /**
- * Un `.docx` de verdad, con lo mínimo que Word exige para abrirlo.
+ * A real `.docx`, with the minimum Word requires to open it.
  *
- * Un .docx es un ZIP con tres archivos dentro. No hace falta ninguna librería:
- * cada línea del texto es un `<w:p>` y ya está.
+ * A .docx is a ZIP with three files inside. No library needed: each line of
+ * the text is a `<w:p>` and that is it.
  */
 export function textoADocx(titulo: string, texto: string): Uint8Array {
   const parrafo = (linea: string, negrita = false): string =>
@@ -175,11 +176,11 @@ export function textoADocx(titulo: string, texto: string): Uint8Array {
 }
 
 /**
- * Cómo está separada una tabla en texto.
+ * How a table is separated in text.
  *
- * Se decide mirando TODAS las líneas y no la primera: una tabla cuya cabecera
- * lleva una coma en un título —«Ventas, por región»— haría creer que el
- * separador es la coma cuando en realidad es el tabulador.
+ * Decided by looking at ALL lines and not the first: a table whose header has
+ * a comma in a title —"Sales, by region"— would suggest the separator is the
+ * comma when it really is the tab.
  */
 function separadorDe(lineas: string[]): '\t' | ',' | null {
   const conTab = lineas.filter((l) => l.includes('\t')).length;
@@ -189,7 +190,7 @@ function separadorDe(lineas: string[]): '\t' | ',' | null {
   return null;
 }
 
-/** Un CSV puede traer campos entrecomillados con comas dentro. */
+/** A CSV can carry quoted fields with commas inside. */
 function partirCsv(linea: string): string[] {
   const campos: string[] = [];
   let actual = '';
@@ -223,16 +224,16 @@ function letraDe(col: number): string {
 }
 
 /**
- * Un `.xlsx` con lo mínimo que Excel exige.
+ * An `.xlsx` with the minimum Excel requires.
  *
- * Los números se escriben COMO NÚMEROS y no como texto. Es la diferencia entre
- * una hoja con la que se puede sumar y una en la que cada celda lleva el
- * triangulito verde de «esto parece un número guardado como texto» — que es
- * justo lo que va a hacer quien pide un Excel: sumar.
+ * Numbers are written AS NUMBERS and not as text. It is the difference
+ * between a sheet you can add up and one where every cell carries the little
+ * green triangle of "this looks like a number stored as text" — and adding up
+ * is exactly what whoever asks for an Excel file is going to do.
  *
- * Las cadenas van en línea (`inlineStr`) en vez de en una tabla compartida:
- * ocupa algo más y ahorra una parte entera del archivo, y aquí el tamaño no es
- * el problema.
+ * Strings go inline (`inlineStr`) instead of in a shared table: it takes a bit
+ * more space and saves a whole part of the file, and size is not the problem
+ * here.
  */
 export function textoAXlsx(titulo: string, texto: string): Uint8Array {
   const lineas = texto.split(/\r?\n/).filter((l, i, a) => l !== '' || i < a.length - 1);
@@ -244,7 +245,7 @@ export function textoAXlsx(titulo: string, texto: string): Uint8Array {
       .map((valor, col) => {
         const ref = `${letraDe(col)}${nFila}`;
         if (valor === '') return '';
-        // Un número es un número; todo lo demás, texto.
+        // A number is a number; everything else, text.
         return /^-?\d+([.,]\d+)?$/.test(valor.trim())
           ? `<c r="${ref}"><v>${valor.trim().replace(',', '.')}</v></c>`
           : `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escaparXml(valor)}</t></is></c>`;
@@ -295,16 +296,16 @@ export function textoAXlsx(titulo: string, texto: string): Uint8Array {
 }
 
 /**
- * Una tabla, si el texto entregado la lleva dentro.
+ * A table, if the delivered text carries one inside.
  *
- * Nace de un resultado real y malo: se le pidió a un agente una hoja de
- * cálculo, entregó su JSON de siempre —correcto— y el Excel salió con UNA
- * columna de frases, porque el texto no traía ni comas ni tabuladores. Válido
- * y sin ningún valor: quien pide un Excel quiere columnas para sumarlas.
+ * Born from a real, bad result: an agent was asked for a spreadsheet, it
+ * delivered its usual JSON —correct— and the Excel came out with ONE column
+ * of sentences, because the text had neither commas nor tabs. Valid and
+ * worthless: whoever asks for Excel wants columns to add up.
  *
- * Así que antes de montar un xlsx o un csv se mira si lo entregado es JSON con
- * una lista de objetos planos. Si lo es, sus claves son la cabecera. Si no, se
- * sigue como antes.
+ * So before building an xlsx or a csv it checks whether the delivery is JSON
+ * with a list of flat objects. If it is, its keys are the header. If not, it
+ * carries on as before.
  */
 export function comoTabla(texto: string): string | null {
   let dato: unknown;
@@ -314,8 +315,8 @@ export function comoTabla(texto: string): string | null {
     return null;
   }
 
-  // La lista puede ser la raíz, o estar dentro bajo cualquier nombre —los
-  // agentes la llaman `hallazgos`, `entries`, `puertos`…
+  // The list can be the root, or sit inside under any name —agents call it
+  // `hallazgos`, `entries`, `puertos`…
   const lista = Array.isArray(dato)
     ? dato
     : dato && typeof dato === 'object'
@@ -330,16 +331,16 @@ export function comoTabla(texto: string): string | null {
   );
   if (filas.length !== lista.length) return null;
 
-  // La cabecera es la unión de las claves, en el orden en que aparecen: una
-  // fila a la que le falte un campo no puede descolocar a las demás.
+  // The header is the union of the keys, in the order they appear: a row
+  // missing a field must not shift the others.
   const columnas: string[] = [];
   for (const f of filas) for (const k of Object.keys(f)) if (!columnas.includes(k)) columnas.push(k);
   if (columnas.length === 0) return null;
 
   const celda = (v: unknown): string => {
     if (v === null || v === undefined) return '';
-    // Un objeto anidado no cabe en una celda; se pone su JSON antes que
-    // «[object Object]», que no le sirve a nadie.
+    // A nested object does not fit in a cell; its JSON goes in rather than
+    // "[object Object]", which helps nobody.
     if (typeof v === 'object') return JSON.stringify(v);
     return String(v).replace(/[\t\r\n]+/g, ' ');
   };
@@ -350,30 +351,30 @@ export function comoTabla(texto: string): string | null {
   ].join('\n');
 }
 
-/* ── cómo se llama el archivo ────────────────────────────────────────────── */
+/* ── what the file is called ───────────────────────────────────────────── */
 
 /**
- * Los reservados de Windows y los separadores de ruta.
+ * Windows reserved characters and path separators.
  *
- * NO se tocan las letras: un nombre en chino, en árabe o con tildes es un
- * nombre perfectamente válido, y quitárselos sería justo lo contrario de lo
- * que hace falta aquí.
+ * Letters are NOT touched: a name in Chinese, Arabic or with accents is a
+ * perfectly valid name, and stripping them would be the exact opposite of
+ * what is needed here.
  */
 const PROHIBIDOS = /[/\\:*?"<>|]/g;
 
-/** Cuántos caracteres como mucho. Un nombre no es un resumen. */
+/** Maximum number of characters. A name is not a summary. */
 const MAX_NOMBRE = 60;
 
-/** ¿Es un carácter imprimible? Los de control no valen en un nombre. */
+/** Is it a printable character? Control characters are not valid in a name. */
 function imprimible(c: string): boolean {
   const p = c.codePointAt(0) ?? 0;
   return p >= 0x20 && p !== 0x7f;
 }
 
 /**
- * Un título cualquiera, convertido en nombre de archivo.
+ * Any title, turned into a file name.
  *
- * Se exporta para poder probarlo sin gastar una llamada al modelo.
+ * Exported so it can be tested without spending a model call.
  */
 export function comoNombre(crudo: string): string {
   const linea = crudo.split(/\r?\n/).find((l) => l.trim()) ?? '';
@@ -381,37 +382,37 @@ export function comoNombre(crudo: string): string {
     .filter(imprimible)
     .join('')
     .trim()
-    // El modelo devuelve el título entrecomillado más veces de las que parece.
+    // The model returns the title in quotes more often than you would think.
     .replace(/^["'`«“]+|["'`»”]+$/g, '')
-    // Y a veces le pone extensión, que aquí la pone `comoArchivo`.
+    // And sometimes adds an extension, which `comoArchivo` adds here.
     .replace(/\.(pdf|docx?|xlsx?|md|txt|csv|json|zip)$/i, '')
     .replace(PROHIBIDOS, ' ')
     .replace(/\s+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '')
     .toLowerCase();
-  // Por code points y no con `.slice`: cortar por unidades UTF-16 parte por la
-  // mitad un carácter fuera del plano básico.
+  // By code points and not with `.slice`: cutting by UTF-16 units splits a
+  // character outside the basic plane in half.
   return [...limpio].slice(0, MAX_NOMBRE).join('').replace(/[-.]+$/, '');
 }
 
 /**
- * La cabecera `content-disposition` de un archivo que se descarga.
+ * The `content-disposition` header for a downloaded file.
  *
- * DOS FORMAS DEL NOMBRE, Y LAS DOS HACEN FALTA (RFC 6266). Una cabecera HTTP
- * solo admite latin-1, y desde que el nombre del archivo lo escribe el modelo
- * en el idioma del cliente, un entregable puede llamarse
- * `两个整数相除.pdf`. Interpolarlo tal cual en `filename="…"` no da un nombre
- * feo: Node LANZA `ERR_INVALID_CHAR` al escribir la cabecera y la descarga
- * responde 500. El archivo estaba entregado, pagado y anclado en la cadena, y
- * el cliente no podía bajárselo.
+ * TWO FORMS OF THE NAME, AND BOTH ARE NEEDED (RFC 6266). An HTTP header only
+ * accepts latin-1, and since the file name is written by the model in the
+ * client's language, a deliverable can be called `两个整数相除.pdf`.
+ * Interpolating it as is into `filename="…"` does not just give an ugly name:
+ * Node THROWS `ERR_INVALID_CHAR` when writing the header and the download
+ * answers 500. The file was delivered, paid for and anchored on-chain, and
+ * the client could not download it.
  *
- *   filename=   una versión en ASCII, para quien no entienda lo otro
- *   filename*=  el nombre de verdad, en UTF-8 percent-encoded
+ *   filename=   an ASCII version, for whoever does not understand the other
+ *   filename*=  the real name, UTF-8 percent-encoded
  *
- * Los navegadores prefieren `filename*` cuando está, así que el nombre bueno
- * es el que se ve. Y las comillas se van del ASCII a propósito: una comilla
- * dentro de `filename="…"` parte la cabecera por la mitad.
+ * Browsers prefer `filename*` when present, so the good name is the one
+ * shown. And quotes are dropped from the ASCII on purpose: a quote inside
+ * `filename="…"` splits the header in half.
  */
 export function comoAdjunto(nombre: string): string {
   const ascii =
@@ -422,63 +423,64 @@ export function comoAdjunto(nombre: string): string {
       })
       .join('')
       .replace(/_{2,}/g, '_')
-      .replace(/^[_.]+|[_.]+$/g, '') || 'archivo';
+      .replace(/^[_.]+|[_.]+$/g, '') || 'file';
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nombre)}`;
 }
 
 /**
- * Lo que se le pide al modelo. Corto a propósito: es un nombre, no un resumen.
+ * What the model is asked. Short on purpose: it is a name, not a summary.
  *
- * Las dos reglas que de verdad cambian el resultado son las dos últimas. Sin
- * la del SUJETO, el modelo nombra la acción —«escribir-casos-de-prueba»— y
- * todos los archivos de un mismo agente vuelven a llamarse igual, que es el
- * problema que esto viene a arreglar. Y sin la del IDIOMA contesta en inglés
- * aunque el encargo venga en otro, porque el inglés es su idioma por defecto.
+ * The two rules that really change the result are the last two. Without the
+ * SUBJECT one, the model names the action —"write-test-cases"— and all files
+ * from the same agent end up with the same name again, which is the problem
+ * this is here to fix. And without the LANGUAGE one it answers in English even
+ * when the brief comes in another language, because English is its default.
  */
 const PIDE_UN_NOMBRE =
   'You name files. Given a client request, reply with ONLY a file name for the deliverable.\n' +
   'Two to five words. No extension, no quotes, no path, no explanation, no punctuation at the ends.\n' +
   'Name the SUBJECT the work is about, never the action asked for.\n' +
-  // El ejemplo de antes enseñaba lo contrario de lo que pedía: a una petición
-  // en INGLÉS le contestaba en español («division de dos enteros»), y el
-  // encargo #95, escrito en inglés, salió como «contactos-en-json». Ahora hay
-  // un ejemplo por idioma, cada uno respondido en el suyo.
+  // The previous example taught the opposite of what it asked: an ENGLISH
+  // request got a Spanish answer ("division de dos enteros"), and job #95,
+  // written in English, came out as "contactos-en-json". Now there is one
+  // example per language, each answered in its own.
   'Write it in the language of the client\'s INSTRUCTIONS — what they ask for — not the language of ' +
   'the data they paste or of field names they spell out, and in their own script. No file-format ' +
   'words (JSON, PDF, CSV). Examples: "write the test cases for a function that divides two integers" ' +
   '-> "division of two integers"; "escribe los casos de prueba de una función que divide dos enteros" ' +
   '-> "division de dos enteros".\n' +
-  // Decirlo no bastaba: con los datos en español y las instrucciones en
-  // inglés, el modelo seguía contestando en español. Obligarle a nombrar
-  // primero el idioma de las instrucciones es lo que lo corrige (medido).
+  // Saying it was not enough: with the data in Spanish and the instructions in
+  // English, the model kept answering in Spanish. Forcing it to name the
+  // instructions' language first is what fixes it (measured).
   'First decide the language of the instructions. Answer in exactly two lines:\n' +
   'LANG: <ISO code of the instructions\' language>\n' +
   'NAME: <the file name, in that language>';
 
 /**
- * El nombre del archivo que se entrega, sacado del TEMA del encargo.
+ * The name of the delivered file, taken from the SUBJECT of the brief.
  *
- * ANTES TODOS SE LLAMABAN IGUAL. Cada agente tenía un nombre fijo —
- * `casos-de-prueba.pdf`, `revision.pdf`, `traducciones.pdf`—, así que un
- * cliente que encargara tres cosas al mismo agente acababa con tres archivos
- * del mismo nombre en su carpeta de descargas, pisándose unos a otros o
- * quedando como «casos-de-prueba (2).pdf». Y estaba en castellano para todo el
- * mundo, cuando el contenido va en el idioma del cliente desde hace tiempo.
+ * THEY ALL USED TO BE CALLED THE SAME. Each agent had a fixed name —
+ * `casos-de-prueba.pdf`, `revision.pdf`, `traducciones.pdf`—, so a client who
+ * ordered three things from the same agent ended up with three files of the
+ * same name in their downloads folder, overwriting each other or showing up
+ * as "casos-de-prueba (2).pdf". And it was in Spanish for everyone, when the
+ * content had long been in the client's language.
  *
- * EL TEMA SALE DEL ENCARGO, no de la entrega. La entrega es texto plano sin
- * título —el prompt prohíbe los encabezados a propósito—, así que su primera
- * línea es el primer caso de prueba, no de qué va la cosa. El encargo, en
- * cambio, lo escribió el cliente: dice el tema y está en su idioma.
+ * THE SUBJECT COMES FROM THE BRIEF, not the delivery. The delivery is plain
+ * text with no title —the prompt forbids headings on purpose—, so its first
+ * line is the first test case, not what the thing is about. The brief, on the
+ * other hand, was written by the client: it states the subject and is in
+ * their language.
  *
- * NUNCA LANZA Y NUNCA DEVUELVE VACÍO. Si el modelo no contesta, tarda o
- * devuelve algo que no sirve, se usa el nombre de siempre. Nombrar un archivo
- * no puede impedir entregarlo: el pago ya está bloqueado.
+ * NEVER THROWS AND NEVER RETURNS EMPTY. If the model does not answer, is slow
+ * or returns something useless, the usual name is used. Naming a file must
+ * not stop it from being delivered: the payment is already locked.
  */
 /**
- * De «LANG: en\nNAME: contact list», la línea del nombre.
+ * From "LANG: en\nNAME: contact list", the name line.
  *
- * Sin la etiqueta —un modelo que no siga el formato— se queda la respuesta
- * entera, y `comoNombre` se queda con su primera línea, como antes.
+ * Without the label —a model not following the format— the whole answer is
+ * kept, and `comoNombre` keeps its first line, as before.
  */
 export function lineaDelNombre(crudo: string): string {
   const m = crudo.match(/^\s*NAME\s*:\s*(.+)$/im);
@@ -486,26 +488,26 @@ export function lineaDelNombre(crudo: string): string {
 }
 
 /**
- * EL IDIOMA DE LAS INSTRUCCIONES, sin los datos delante.
+ * THE LANGUAGE OF THE INSTRUCTIONS, without the data in front.
  *
- * Pedirle al modelo «escribe en el idioma del cliente» no funciona cuando el
- * encargo trae datos en otro idioma: medido el 2026-09-28, con órdenes en
- * inglés y una lista de contactos en español, las claves salían en español
- * más de la mitad de las veces, y un detector que veía el encargo entero
- * acertaba 19 de 30 (tomaba un encargo en francés por español, y uno en chino
- * por inglés). El mismo detector con SOLO el primer párrafo acertó 39 de 40.
+ * Asking the model to "write in the client's language" does not work when the
+ * brief carries data in another language: measured on 2026-09-28, with
+ * instructions in English and a contact list in Spanish, the keys came out in
+ * Spanish more than half the time, and a detector that saw the whole brief got
+ * 19 out of 30 right (it took a French brief for Spanish, and a Chinese one
+ * for English). The same detector with ONLY the first paragraph got 39 out of
+ * 40.
  *
- * El primer párrafo es lo que va antes de la primera línea en blanco, que es
- * como se escribe casi siempre un encargo: primero qué hay que hacer, después
- * los datos. Si es demasiado corto para decir nada, se usan los primeros 300
- * caracteres.
+ * The first paragraph is what comes before the first blank line, which is how
+ * a brief is almost always written: first what to do, then the data. If it is
+ * too short to say anything, the first 300 characters are used.
  */
 /**
- * El nombre del idioma, en inglés, para decírselo al modelo.
+ * The language name, in English, to tell the model.
  *
- * Con el código solo («"en"») el modelo seguía nombrando en español un encargo
- * en inglés que citaba campos en español; con «Write the NAME in English» y el
- * aviso de que ni los datos ni los campos citados deciden, acertó 12 de 12.
+ * With only the code ("en") the model kept naming in Spanish an English brief
+ * that quoted Spanish fields; with "Write the NAME in English" and the warning
+ * that neither the data nor the quoted fields decide, it got 12 out of 12.
  */
 const NOMBRES_DE_IDIOMA: Record<string, string> = {
   en: 'English', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian',
@@ -528,7 +530,7 @@ export function parrafoDeInstrucciones(brief: string): string {
   return primero.length >= 12 ? primero : limpio.slice(0, 300);
 }
 
-/** El código ISO del idioma en que están escritas las instrucciones, o null si no se pudo saber. */
+/** ISO code of the language the instructions are written in, or null if it could not be told. */
 export async function idiomaDeLasInstrucciones(brief: string): Promise<string | null> {
   try {
     const cfg = resolverLlm(process.env);
@@ -544,40 +546,43 @@ export async function idiomaDeLasInstrucciones(brief: string): Promise<string | 
 }
 
 export async function nombreDelTema(brief: string, deReserva: string, idioma?: string | null): Promise<string> {
-  // El idioma se decide con el párrafo de las instrucciones, no con el encargo
-  // entero: ver `idiomaDeLasInstrucciones`.
+  // The language is decided from the instructions paragraph, not the whole
+  // brief: see `idiomaDeLasInstrucciones`.
   idioma = idioma ?? (await idiomaDeLasInstrucciones(brief));
   try {
     const cfg = resolverLlm(process.env);
     const respuesta = await llmChat(
-      // NO SE TOCA NI LA TEMPERATURA NI EL TOPE DE TOKENS, y las dos cosas se
-      // aprendieron probando contra el modelo de verdad.
+      // NEITHER THE TEMPERATURE NOR THE TOKEN CAP IS TOUCHED, and both lessons
+      // were learned by testing against the real model.
       //
-      // Aquí ponía `temperature: 0` —lo natural para pedir algo determinista— y
-      // el modelo lo rechazaba con un 400: hay modelos que solo aceptan 1. Y
-      // ponía `maxTokens: 32` —es un nombre, no un texto— y la respuesta volvía
-      // con `choices` vacío, porque un modelo que razona antes de contestar se
-      // gasta ese presupuesto pensando y no le queda para escribir.
+      // This used to set `temperature: 0` —the natural choice for something
+      // deterministic— and the model rejected it with a 400: some models only
+      // accept 1. And it set `maxTokens: 32` —it is a name, not a text— and the
+      // answer came back with empty `choices`, because a model that reasons
+      // before answering spends that budget thinking and has none left to
+      // write.
       //
-      // Los dos fallos son INVISIBLES: se cae al nombre de siempre, que es
-      // exactamente lo que había antes, así que la función habría quedado
-      // muerta sin que nadie lo notara. Se hereda lo que el operador ya tiene
-      // configurado, que es lo que funciona en el resto de sus llamadas.
+      // Both failures are INVISIBLE: it falls back to the usual name, which is
+      // exactly what there was before, so the function would have been dead
+      // without anyone noticing. It inherits what the operator already has
+      // configured, which is what works in the rest of their calls.
       //
-      // Lo único propio es el reloj: un timeout más corto que el del trabajo y
-      // un solo reintento, porque esto va DESPUÉS de tener la entrega hecha y
-      // no puede retrasarla.
+      // The only thing of its own is the clock: a timeout shorter than the
+      // job's and a single retry, because this runs AFTER the delivery is
+      // ready and must not delay it.
       { ...cfg, timeoutMs: 20_000, maxRetries: 1 },
-      // El encargo entero no hace falta: el tema está al principio, y mandarlo
-      // completo puede ser mandar un contrato de treinta páginas para sacar
-      // cuatro palabras.
-      // Sin el manifiesto, por lo mismo que en `formatoPedido`: son 1.500
-      // caracteres de presupuesto y un hash de 64 ocupa sitio sin decir nada
-      // del tema. Con adjuntos cortos llegaba a colarse entero.
+      // The whole brief is not needed: the subject is at the start, and
+      // sending it complete may mean sending a thirty-page contract to get
+      // four words.
+      // Without the manifest, for the same reason as in `formatoPedido`: the
+      // budget is 1,500 characters and a 64-char hash takes room without
+      // saying anything about the subject. With short attachments it could
+      // slip in whole.
       {
         system: PIDE_UN_NOMBRE,
-        // Si quien llama ya sabe el idioma de las instrucciones, se le dice: no
-        // hay que volver a adivinarlo, que es donde el modelo se equivoca.
+        // If the caller already knows the instructions' language, the model is
+        // told: no need to guess it again, which is where the model gets it
+        // wrong.
         user:
           stripFilesManifest(brief).trim().slice(0, 1_500) +
           (idioma
@@ -588,23 +593,23 @@ export async function nombreDelTema(brief: string, deReserva: string, idioma?: s
     );
     const nombre = comoNombre(lineaDelNombre(respuesta));
     if (nombre) return nombre;
-    console.warn(`[salida] el modelo no dio un nombre usable; el archivo va como «${deReserva}»`);
+    console.warn(`[output] the model gave no usable name; the file goes as "${deReserva}"`);
   } catch (err) {
     console.warn(
-      `[salida] no se pudo nombrar el archivo (${err instanceof Error ? err.message.split('\n')[0] : err}); ` +
-        `va como «${deReserva}»`,
+      `[output] could not name the file (${err instanceof Error ? err.message.split('\n')[0] : err}); ` +
+        `it goes as "${deReserva}"`,
     );
   }
   return deReserva;
 }
 
 /**
- * El archivo listo para adjuntar a la entrega.
+ * The file ready to attach to the delivery.
  *
- * `paraLeer` es la versión legible del contenido, y existe por un caso real:
- * hay agentes cuyo texto entregado es JSON —bueno para una máquina, ilegible
- * dentro de un PDF—, y ahí se les pasa aparte lo que debe ver una persona. Si
- * no se da, se usa el texto tal cual.
+ * `paraLeer` is the human-readable version of the content, and it exists
+ * because of a real case: some agents deliver JSON —good for a machine,
+ * unreadable inside a PDF—, and there they are given separately what a person
+ * should see. If not given, the text is used as is.
  */
 export function comoArchivo(
   formato: Formato,
@@ -615,9 +620,9 @@ export function comoArchivo(
 ): ArchivoDeSalida {
   const { ext, mime } = TIPOS[formato];
   const name = `${nombreBase}.${ext}`;
-  // Para un Excel o un CSV se busca primero una TABLA dentro de lo entregado:
-  // la versión en prosa daría una sola columna de frases, que es un archivo
-  // válido y sin ningún valor para quien lo pidió para sumar.
+  // For an Excel or CSV file, a TABLE inside the delivery is looked for first:
+  // the prose version would give a single column of sentences, which is a
+  // valid file and worthless to whoever asked for it to add things up.
   const tabla = formato === 'xlsx' || formato === 'csv' ? comoTabla(texto) : null;
   const legible = tabla ?? paraLeer ?? texto;
 
@@ -628,20 +633,20 @@ export function comoArchivo(
       return { name, data: textoADocx(titulo, legible), mime };
     case 'xlsx':
       return { name, data: textoAXlsx(titulo, legible), mime };
-    // El markdown lleva el título como encabezado, porque es lo que un `.md`
-    // hace. Los demás van tal cual: un CSV con un `#` delante deja de ser CSV.
+    // Markdown carries the title as a heading, because that is what an `.md`
+    // does. The rest go as is: a CSV with a `#` in front is no longer a CSV.
     case 'md':
       return { name, data: `# ${titulo}\n\n${legible}\n`, mime };
     case 'csv':
-      // Una tabla en tabuladores se convierte a comas; si no había tabla, el
-      // texto va tal cual, que es lo que ya hacía.
+      // A tab-separated table is converted to commas; if there was no table,
+      // the text goes as is, which is what it already did.
       return { name, data: tabla ? aCsv(tabla) : texto, mime };
     default:
       return { name, data: texto, mime };
   }
 }
 
-/** Tabuladores a comas, entrecomillando sólo lo que lo necesita. */
+/** Tabs to commas, quoting only what needs it. */
 function aCsv(tabla: string): string {
   return tabla
     .split('\n')
