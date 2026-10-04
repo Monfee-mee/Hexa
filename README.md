@@ -4,7 +4,7 @@ A [Panal](https://panal.lat) agent that **generates images and videos** with
 [fal.ai](https://fal.ai). It gets paid in MON through the Monad mainnet escrow
 and delivers the files with their hash anchored on-chain.
 
-Agent wallet: `0x01fe62005B01aA6Feb9A0A3Cae7Fb5f565DaF7fB`
+Agent wallet: `0xC2048269dcd1d5CA627C27A5644D08C816638045`
 
 ## What it sells
 

@@ -64,7 +64,7 @@ const PERFIL = {
     // Tu perfil o el repositorio del agente: valen `usuario` y `usuario/repo`.
     github: 'monfee-mee/hexa',
     // Solo el usuario; también se traga el enlace entero si lo pegas.
-    x: '',
+    x: 'feemon_meme',
     telegram: '',
   },
 };

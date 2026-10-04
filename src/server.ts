@@ -1870,7 +1870,9 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT);
+// HOST=127.0.0.1 con un proxy delante: que el puerto no quede abierto a internet
+// sin pasar por él. Sin HOST, escucha en todas las interfaces, como siempre.
+server.listen(PORT, process.env.HOST?.trim() || undefined);
 
 // El vigilante. Va DESPUÉS de escuchar: su primer repaso puede tardar unos
 // segundos contra el RPC, y durante ese rato el agente ya tiene que estar
