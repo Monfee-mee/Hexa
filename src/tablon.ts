@@ -1,42 +1,43 @@
 /**
  * ────────────────────────────────────────────────────────────────────────────
- *  El tablón: coger solo, sin que nadie haga clic, los encargos que encajen.
+ *  The job board: picking up matching jobs on its own, with nobody clicking.
  * ────────────────────────────────────────────────────────────────────────────
  *
- * QUÉ ES EL TABLÓN. Un cliente puede pagar un encargo SIN elegir agente
- * (`createTask` con `worker = address(0)`) y colgar un anuncio público. Lo coge
- * el primer agente activo que llame a `claimTask`. Hasta ahora solo podía
- * hacerlo una persona desde la web; el tablón se pensó para que lo hiciera un
- * programa.
+ * WHAT THE BOARD IS. A client can pay for a job WITHOUT choosing an agent
+ * (`createTask` with `worker = address(0)`) and post a public listing. The
+ * first active agent to call `claimTask` takes it. Until now only a person
+ * could do that from the web; the board was designed for a program to do it.
  *
- * APAGADO POR DEFECTO, Y A PROPÓSITO. Coger un encargo es comprometerse a
- * entregarlo antes del plazo, con el dinero de un desconocido bloqueado. Eso no
- * se activa solo por actualizar la plantilla: se enciende con `TABLON=on`.
+ * OFF BY DEFAULT, ON PURPOSE. Taking a job is committing to deliver it before
+ * the deadline, with a stranger's money locked. That does not switch itself on
+ * just by updating the template: it is enabled with `TABLON=on`.
  *
- * QUÉ COGE. Solo lo que cumple las cuatro cosas:
- *   - no lo publicó este mismo agente;
- *   - paga en la moneda de este agente y AL MENOS lo que cobra por un encargo en
- *     el registro: el agente ya decidió su precio, y el tablón no lo rebaja;
- *   - le queda plazo de sobra (`TABLON_MARGEN_MINUTOS`);
- *   - su anuncio menciona alguna de sus habilidades —las de su ficha en la
- *     cadena, más `TABLON_PALABRAS`—. Es una regla simple a propósito: el
- *     encargo de verdad solo se puede leer DESPUÉS de cogerlo, así que lo único
- *     con qué decidir es el anuncio, y un emparejamiento predecible es mejor que
- *     uno listo que nadie sabe explicar.
- * Y de lo que encaja, uno por ronda: el que más paga.
+ * WHAT IT TAKES. Only what meets all four conditions:
+ *   - it was not posted by this same agent;
+ *   - it pays in this agent's currency and AT LEAST what it charges per job in
+ *     the registry: the agent already chose its price, and the board does not
+ *     discount it;
+ *   - it has plenty of time left (`TABLON_MARGEN_MINUTOS`);
+ *   - its listing mentions one of its skills —those on its on-chain profile,
+ *     plus `TABLON_PALABRAS`—. It is a simple rule on purpose: the real brief
+ *     can only be read AFTER taking the job, so the listing is the only thing
+ *     to decide with, and a predictable match beats a clever one nobody can
+ *     explain.
+ * And out of what matches, one per round: the best paying.
  *
- * CÓMO LO TRABAJA. Con el mismo `work()` que un encargo normal: guarda el
- * encargo en disco, lo trabaja, SIRVE la entrega desde este servidor y ancla su
- * hash. El cliente recoge la entrega del `bot:` que el trabajador publica, como
- * en cualquier encargo, así que la entrega vive aquí y no en el tablón. Y como
- * el encargo queda en disco y la tarea asignada a este agente en la cadena, si
- * el proceso muere a mitad el vigilante lo retoma.
+ * HOW IT WORKS IT. With the same `work()` as a normal job: it stores the brief
+ * on disk, works it, SERVES the delivery from this server and anchors its
+ * hash. The client fetches the delivery from the `bot:` the worker publishes,
+ * as with any job, so the delivery lives here and not on the board. And since
+ * the brief stays on disk and the task is assigned to this agent on-chain, if
+ * the process dies halfway the watchdog picks it up again.
  *
- * LA WALLET, DE UNA EN UNA. `claimTask` es una transacción. Con un encargo en
- * marcha la ronda se salta, y después de coger se espera antes de trabajar: dos
- * transacciones seguidas de la misma wallet chocan por el nonce, y en Monad una
- * lanzada justo detrás de otra revierte. El gas de `claimTask` lo fija el SDK a
- * mano desde la 0.18.3: sin eso, Monad cobra un límite inflado entero.
+ * THE WALLET, ONE AT A TIME. `claimTask` is a transaction. With a job in
+ * progress the round is skipped, and after claiming there is a wait before
+ * working: two transactions in a row from the same wallet clash on the nonce,
+ * and on Monad one sent right after another reverts. The gas for `claimTask`
+ * has been set by hand in the SDK since 0.18.3: without that, Monad charges a
+ * whole inflated limit.
  */
 
 import type { Address } from 'viem';
@@ -44,11 +45,11 @@ import { formatEther } from 'viem';
 import type { EncargoDelTablon, PanalClient } from '@panal/sdk';
 
 export interface OpcionesTablon {
-  /** Cada cuánto se mira el tablón, en minutos. */
+  /** How often the board is checked, in minutes. */
   minutos: number;
-  /** Plazo que tiene que quedar, como mínimo, para cogerlo. */
+  /** Minimum time that must be left to take it. */
   margenMinutos: number;
-  /** Palabras que cuentan como encaje, además de las habilidades de la ficha. */
+  /** Words that count as a match, besides the profile skills. */
   palabras: string[];
 }
 
@@ -59,10 +60,11 @@ export const TABLON_POR_DEFECTO: OpcionesTablon = {
 };
 
 /**
- * Las opciones del .env, o `null` si está apagado — que es lo normal.
+ * The options from .env, or `null` if it is off — which is the norm.
  *
- * Solo `TABLON=on` lo enciende. Un valor numérico que no se entiende no apaga
- * nada ni lanza: se usa el de por defecto y se dice en el log.
+ * Only `TABLON=on` turns it on. A numeric value that cannot be understood
+ * neither turns anything off nor throws: the default is used and the log says
+ * so.
  */
 export function opcionesDelEntorno(
   env: Record<string, string | undefined>,
@@ -74,12 +76,12 @@ export function opcionesDelEntorno(
   if (env.TABLON_MINUTOS?.trim()) {
     const n = Number(env.TABLON_MINUTOS);
     if (Number.isFinite(n) && n >= 1) o.minutos = n;
-    else avisar(`[tablon] TABLON_MINUTOS="${env.TABLON_MINUTOS}" no vale (mínimo 1): uso ${o.minutos}.`);
+    else avisar(`[board] TABLON_MINUTOS="${env.TABLON_MINUTOS}" is not valid (minimum 1): using ${o.minutos}.`);
   }
   if (env.TABLON_MARGEN_MINUTOS?.trim()) {
     const n = Number(env.TABLON_MARGEN_MINUTOS);
     if (Number.isFinite(n) && n >= 5) o.margenMinutos = n;
-    else avisar(`[tablon] TABLON_MARGEN_MINUTOS="${env.TABLON_MARGEN_MINUTOS}" no vale (mínimo 5): uso ${o.margenMinutos}.`);
+    else avisar(`[board] TABLON_MARGEN_MINUTOS="${env.TABLON_MARGEN_MINUTOS}" is not valid (minimum 5): using ${o.margenMinutos}.`);
   }
   if (env.TABLON_PALABRAS?.trim()) {
     o.palabras = env.TABLON_PALABRAS.split(',').map((p) => p.trim()).filter(Boolean);
@@ -87,7 +89,7 @@ export function opcionesDelEntorno(
   return o;
 }
 
-/** Sin tildes, en minúsculas, y con guiones y barras como espacios. */
+/** No accents, lowercase, and dashes and slashes as spaces. */
 function plano(s: string): string {
   return s
     .normalize('NFD')
@@ -97,11 +99,12 @@ function plano(s: string): string {
 }
 
 /**
- * ¿Menciona el anuncio alguna de estas palabras?
+ * Does the listing mention any of these words?
  *
- * Palabra entera, no trozo: «test» no encaja con «testimonio», y «ai» no encaja
- * con cualquier palabra que contenga esas dos letras. Una palabra de menos de
- * tres letras no cuenta: son justo las que aparecen por casualidad.
+ * Whole word, not a fragment: "test" does not match "testimony", and "ai" does
+ * not match any word that contains those two letters. A word shorter than
+ * three letters does not count: those are exactly the ones that show up by
+ * chance.
  */
 export function encaja(anuncio: string, palabras: string[]): boolean {
   const texto = ` ${plano(anuncio).replace(/[^\p{L}\p{N}]+/gu, ' ')} `;
@@ -115,22 +118,22 @@ export interface DepsTablon {
   panal: PanalClient;
   yo: Address;
   opciones: OpcionesTablon;
-  /** Lo que este agente cobra por un encargo en el registro, y en qué moneda. */
+  /** What this agent charges per job in the registry, and in which currency. */
   precio: { amount: bigint; currency: Address };
-  /** Sus habilidades, de la ficha en la cadena. */
+  /** Its skills, from the on-chain profile. */
   habilidades: string[];
-  /** ¿Hay un encargo en marcha? Entonces no se toca la wallet. */
+  /** Is a job in progress? Then the wallet is not touched. */
   ocupado: () => boolean;
-  /** Marca la wallet como ocupada mientras se coge y se trabaja. */
+  /** Marks the wallet as busy while claiming and working. */
   marcar: (ocupada: boolean) => void;
-  /** El `work()` de la plantilla: trabaja, sirve y ancla. */
+  /** The template's `work()`: works, serves and anchors. */
   trabajar: (taskId: bigint, brief: string) => Promise<string>;
-  /** Pausa entre coger y trabajar. Inyectable para las pruebas. */
+  /** Pause between claiming and working. Injectable for tests. */
   esperar?: (ms: number) => Promise<void>;
   log?: (m: string) => void;
 }
 
-/** Lo que se puede coger de lo que hay publicado, del que más paga al que menos. */
+/** What can be taken from what is posted, best paying first. */
 export function candidatos(
   lista: EncargoDelTablon[],
   deps: Pick<DepsTablon, 'yo' | 'precio' | 'habilidades' | 'opciones'>,
@@ -147,10 +150,10 @@ export function candidatos(
 }
 
 /**
- * Una ronda: mira el tablón y, si algo encaja, lo coge y lo trabaja.
+ * One round: checks the board and, if something matches, claims and works it.
  *
- * Devuelve lo que hizo, línea a línea, para las pruebas. Nunca lanza: un fallo
- * aquí no puede tumbar el agente que atiende sus encargos normales.
+ * Returns what it did, line by line, for the tests. Never throws: a failure
+ * here must not take down the agent serving its normal jobs.
  */
 export async function repasarTablon(deps: DepsTablon): Promise<string[]> {
   const log = deps.log ?? ((m: string) => console.log(m));
@@ -167,7 +170,7 @@ export async function repasarTablon(deps: DepsTablon): Promise<string[]> {
   try {
     lista = await deps.panal.listBoard({ limit: 30 });
   } catch (err) {
-    anotar(`[tablon] no se pudo leer el tablón: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+    anotar(`[board] could not read the board: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
     return hecho;
   }
   const elegido = candidatos(lista, deps, Math.floor(Date.now() / 1000))[0];
@@ -178,33 +181,33 @@ export async function repasarTablon(deps: DepsTablon): Promise<string[]> {
     try {
       await deps.panal.claimTask(elegido.taskId);
     } catch (err) {
-      // Lo normal aquí es que otro lo cogiera antes: el tablón es de quien llega
-      // primero. No es un fallo del agente.
-      anotar(`[tablon] #${elegido.taskId} no se pudo coger: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+      // The usual reason here is that someone else took it first: the board is
+      // first come, first served. Not a fault of the agent.
+      anotar(`[board] #${elegido.taskId} could not be claimed: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
       return hecho;
     }
     anotar(
-      `[tablon] #${elegido.taskId} cogido · ${formatEther(elegido.amount)} · «${elegido.anuncio.slice(0, 80)}»`,
+      `[board] #${elegido.taskId} claimed · ${formatEther(elegido.amount)} · "${elegido.anuncio.slice(0, 80)}"`,
     );
 
-    // Dos transacciones seguidas de la misma wallet chocan en Monad.
+    // Two transactions in a row from the same wallet clash on Monad.
     await esperar(15_000);
 
     let brief: string;
     try {
       brief = await deps.panal.readBoardBrief(elegido.taskId);
     } catch (err) {
-      // Cogido y sin encargo: el cliente pagó pero no dejó el texto. El vigilante
-      // lo seguirá avisando; aquí no hay nada más que hacer.
-      anotar(`[tablon] #${elegido.taskId} cogido pero sin encargo que leer: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+      // Claimed and no brief: the client paid but did not leave the text. The
+      // watchdog will keep flagging it; nothing else to do here.
+      anotar(`[board] #${elegido.taskId} claimed but with no brief to read: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
       return hecho;
     }
 
     const r = await deps.trabajar(elegido.taskId, brief);
-    anotar(`[tablon] #${elegido.taskId} ${r === 'entregada' ? 'entregado' : `sin entregar todavía (${r}): lo retoma el vigilante`}`);
+    anotar(`[board] #${elegido.taskId} ${r === 'entregada' ? 'delivered' : `not delivered yet (${r}): the watchdog will pick it up`}`);
     return hecho;
   } catch (err) {
-    anotar(`[tablon] #${elegido.taskId}: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+    anotar(`[board] #${elegido.taskId}: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
     return hecho;
   } finally {
     deps.marcar(false);
@@ -212,8 +215,8 @@ export async function repasarTablon(deps: DepsTablon): Promise<string[]> {
 }
 
 /**
- * Arranca las rondas. Lee de la cadena el precio y las habilidades de este
- * agente una vez, al arrancar: son los que decidió su dueño.
+ * Starts the rounds. Reads this agent's price and skills from the chain once,
+ * at startup: they are what its owner decided.
  */
 export async function arrancarTablon(
   deps: Omit<DepsTablon, 'precio' | 'habilidades'>,
@@ -223,24 +226,24 @@ export async function arrancarTablon(
   try {
     const ficha = await deps.panal.getAgent(deps.yo);
     if (!ficha.active) {
-      console.warn('[tablon] este agente no está activo en el registro: claimTask lo rechazaría. Tablón apagado.');
+      console.warn('[board] this agent is not active in the registry: claimTask would reject it. Board off.');
       return;
     }
     precio = { amount: ficha.pricePerTask, currency: ficha.currency };
     habilidades = ficha.metadata.skills ?? [];
   } catch (err) {
-    console.warn(`[tablon] no se pudo leer la ficha: ${err instanceof Error ? err.message : err}. Tablón apagado.`);
+    console.warn(`[board] could not read the profile: ${err instanceof Error ? err.message : err}. Board off.`);
     return;
   }
   if (habilidades.length + deps.opciones.palabras.length === 0) {
-    console.warn('[tablon] sin habilidades en la ficha ni TABLON_PALABRAS: nada con qué decidir. Tablón apagado.');
+    console.warn('[board] no skills in the profile and no TABLON_PALABRAS: nothing to decide with. Board off.');
     return;
   }
 
   const completas: DepsTablon = { ...deps, precio, habilidades };
   console.log(
-    `Tablón: cada ${deps.opciones.minutos} min · desde ${formatEther(precio.amount)} en su moneda · ` +
-      `con ${deps.opciones.margenMinutos} min de plazo como mínimo · ${habilidades.length + deps.opciones.palabras.length} palabras.`,
+    `Board: every ${deps.opciones.minutos} min · from ${formatEther(precio.amount)} in its currency · ` +
+      `with at least ${deps.opciones.margenMinutos} min left · ${habilidades.length + deps.opciones.palabras.length} words.`,
   );
   let enMarcha = false;
   const ronda = async (): Promise<void> => {

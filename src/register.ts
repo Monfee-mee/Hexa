@@ -1,14 +1,13 @@
 /**
- * Da de alta tu agente en el marketplace.
+ * Registers your agent in the marketplace.
  *
  *   npm run register
  *
- * Se ejecuta UNA vez. A partir de ahí tu agente aparece en panal.lat y en
- * cualquier cliente que hable con Panal —incluido Claude, vía `panal-mcp`— y
- * puede recibir encargos.
+ * Run it ONCE. From then on your agent shows up on panal.lat and in any client
+ * that speaks Panal —Claude included, via `panal-mcp`— and can receive jobs.
  *
- * Vuelve a ejecutarlo cuando cambies el precio o las skills: detecta que ya
- * estabas registrado y actualiza en vez de fallar.
+ * Run it again when you change the price or the skills: it detects you were
+ * already registered and updates instead of failing.
  */
 
 import 'dotenv/config';
@@ -17,137 +16,138 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { createPublicClient, createWalletClient, formatEther, http, parseEther } from 'viem';
 
 // ────────────────────────────────────────────────────────────────────────────
-//  RELLENA ESTO. Es tu escaparate: lo que verá quien busque un agente.
+//  FILL THIS IN. It is your storefront: what someone looking for an agent sees.
 // ────────────────────────────────────────────────────────────────────────────
 
 const PERFIL = {
   name: 'Hexa',
 
-  // Una frase que diga qué resuelves. Concreta gana a genérica: "traduzco
-  // documentación técnica EN<->ES" se contrata más que "asistente de IA".
+  // One sentence saying what you solve. Specific beats generic: "I translate
+  // technical docs EN<->ES" gets hired more than "AI assistant".
   description:
     'I generate images and videos from your description: logos, covers, illustrations and 5-10 s clips. ' +
     'Attach a photo and I will edit or animate it. Delivered as PNG and MP4.',
 
-  // Por estas palabras te van a encontrar, y son las que deciden en qué
-  // categoría del mercado apareces. Piensa en lo que escribiría alguien que
-  // necesita tu servicio, no en cómo describirías tú tu tecnología.
+  // These are the words people will find you by, and they decide which market
+  // category you appear in. Think of what someone who needs your service would
+  // type, not of how you would describe your technology.
   skills: ['image generation', 'video generation', 'illustration', 'logo', 'cover art', 'video'],
 
-  // Tu endpoint público HTTPS. Sin esto el cliente no puede mandarte el brief
-  // ni descargarse el resultado, así que el agente queda casi inútil.
-  // `||` y no `??` a propósito: el .env trae `PUBLIC_URL=` vacío, y una cadena
-  // vacía NO la sustituye `??`. Con `??` el botUrl acababa siendo '' y la
-  // comprobación de "no has puesto tu URL" no saltaba nunca.
-  botUrl: process.env.PUBLIC_URL?.trim() || 'https://cambia-esto.example.com',
+  // Your public HTTPS endpoint. Without it the client cannot send you the brief
+  // or download the result, so the agent is nearly useless.
+  // `||` and not `??` on purpose: the .env ships `PUBLIC_URL=` empty, and `??`
+  // does NOT replace an empty string. With `??` the botUrl ended up as '' and
+  // the "you have not set your URL" check never fired.
+  botUrl: process.env.PUBLIC_URL?.trim() || 'https://change-me.example.com',
 
-  // TU CARA, si quieres tenerla. Todo esto es opcional y va vacío por defecto:
-  // un agente sin logo no vale menos, es lo que hay hoy en todo el mercado.
+  // YOUR FACE, if you want one. All of this is optional and empty by default:
+  // an agent without a logo is worth no less, that is the whole market today.
   //
-  // Lo que compra ponerlo es que el cliente pueda MIRARTE antes de pagarte. En
-  // el mercado sales entre desconocidos, y un repositorio que se puede abrir
-  // dice más de ti que cualquier descripción que escribas de ti mismo.
+  // What setting it buys is letting the client LOOK AT YOU before paying. In
+  // the market you appear among strangers, and a repository anyone can open
+  // says more about you than any description you write about yourself.
   //
-  // Se guarda en tu ficha del registro, así que cambiarlo cuesta una
-  // transacción: `npm run register` otra vez y ya.
+  // It is stored in your registry profile, so changing it costs a
+  // transaction: run `npm run register` again and that is it.
   links: {
-    // El logo sale en tu tarjeta, en el mercado y en la app. Https, cuadrado y
-    // pequeño: se pinta a 56 px, no hace falta más.
+    // The logo shows on your card, in the market and in the app. Https, square
+    // and small: it is drawn at 56 px, no need for more.
     //
-    // DÉJALO VACÍO Y NO TIENES QUE HACER NADA: tu agente sirve el `logo.svg`
-    // que hay en esta carpeta, y al registrarte se comprueba que responde y se
-    // publica esa URL. El generador te escribió uno con la inicial de tu
-    // nombre; para poner el tuyo, sobrescribe el archivo (vale .svg, .png o
-    // .webp) y vuelve a ejecutar `npm run register`.
+    // LEAVE IT EMPTY AND YOU HAVE NOTHING TO DO: your agent serves the
+    // `logo.svg` in this folder, and on registering it checks that it responds
+    // and publishes that URL. The generator wrote one with your name's
+    // initial; to use yours, overwrite the file (.svg, .png or .webp) and run
+    // `npm run register` again.
     logo: '',
     web: '',
-    // Tu perfil o el repositorio del agente: valen `usuario` y `usuario/repo`.
+    // Your profile or the agent's repository: `user` and `user/repo` both work.
     github: 'monfee-mee/hexa',
-    // Solo el usuario; también se traga el enlace entero si lo pegas.
+    // Just the username; it also accepts the full link if you paste it.
     x: '',
     telegram: '',
   },
 };
 
-/** Lo que cobras por tarea. */
+/** What you charge per task. Must match the first tier in agent.ts. */
 const PRECIO = parseEther('2');
 
-/** En qué cobras: MON nativo, o $PANAL. */
+/** What you get paid in: native MON, or $PANAL. */
 const MONEDA = NATIVE_CURRENCY;
 
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * La marca que lleva todo lo que trae la plantilla sin rellenar.
+ * The marker carried by everything the template ships unfilled.
  *
- * Una sola palabra en un solo sitio, a propósito. La primera versión de esto
- * guardaba una copia de cada texto de ejemplo para compararlos, y con el texto
- * duplicado en dos puntos del archivo bastaba un buscar-y-reemplazar para
- * cambiar los dos a la vez: el perfil quedaba "relleno" y la comprobación
- * seguía dándolo por vacío, porque su copia había cambiado igual.
+ * One single word in one single place, on purpose. The first version of this
+ * kept a copy of each sample text to compare against, and with the text
+ * duplicated in two spots in the file a find-and-replace was enough to change
+ * both at once: the profile looked "filled in" and the check still considered
+ * it empty, because its copy had changed too.
  */
-const SIN_RELLENAR = /cambia-esto/i;
+const SIN_RELLENAR = /change-me/i;
 
 /**
- * Lo que falta por rellenar del perfil, o null si está listo.
+ * What is still missing from the profile, or null if it is ready.
  *
- * Registrarse con los valores de ejemplo no falla: te deja en el escaparate con
- * una ficha que no dice nada. Y no es solo feo — las skills son por lo que el
- * mercado te clasifica, así que con las de la plantilla acabas en el cajón por
- * defecto y quien busca lo que tú haces no te encuentra. Le pasó a un agente
- * real que estructuraba JSON y estaba archivado entre los de código.
+ * Registering with the sample values does not fail: it puts you in the
+ * storefront with a profile that says nothing. And it is not just ugly — the
+ * skills are what the market classifies you by, so with the template's you
+ * end up in the default drawer and whoever looks for what you do cannot find
+ * you. It happened to a real agent that structured JSON and was filed among
+ * the coding ones.
  *
- * Se exporta para poder probarlo sin firmar nada.
+ * Exported so it can be tested without signing anything.
  */
 export function loQueFaltaDelPerfil(perfil: typeof PERFIL): string | null {
   if (SIN_RELLENAR.test(perfil.botUrl)) {
     return (
-      'falta tu URL pública. Ponla en PERFIL.botUrl, o en PUBLIC_URL del .env.\n' +
-      '  Sin endpoint no puedes recibir encargos ni entregar: el agente se queda de adorno.'
+      'your public URL is missing. Set it in PERFIL.botUrl, or in PUBLIC_URL in .env.\n' +
+      '  Without an endpoint you cannot receive jobs or deliver: the agent is just decoration.'
     );
   }
   const desc = perfil.description.trim();
   if (!desc || SIN_RELLENAR.test(desc)) {
     return (
-      'falta tu descripción: sigue la de la plantilla.\n' +
-      '  Es la frase que lee quien decide si contratarte. Concreta gana a genérica.'
+      'your description is missing: it is still the template one.\n' +
+      '  It is the sentence read by whoever decides whether to hire you. Specific beats generic.'
     );
   }
   const skills = perfil.skills.map((s) => s.trim()).filter(Boolean);
   if (!skills.length || skills.some((s) => SIN_RELLENAR.test(s))) {
     return (
-      'faltan tus skills: siguen las de la plantilla.\n' +
-      '  Por esas palabras te encuentran, y son las que deciden en qué categoría\n' +
-      '  del mercado apareces. Con las de ejemplo no te encuentra nadie.'
+      'your skills are missing: they are still the template ones.\n' +
+      '  Those words are how people find you, and they decide which market\n' +
+      '  category you appear in. With the sample ones nobody finds you.'
     );
   }
   return null;
 }
 
 /**
- * ¿Tu endpoint responde, y es TUYO?
+ * Does your endpoint respond, and is it YOURS?
  *
- * Se pide `GET /agent.json`, que es lo que sirve tu propio servidor, y se
- * compara la dirección que anuncia con la de esta wallet. Así se cazan las dos
- * formas de registrar un agente roto: una URL que todavía no está levantada, y
- * una URL que sí responde pero es de otro (copiada de un ejemplo, o de otro
- * agente tuyo).
+ * It requests `GET /agent.json`, which is what your own server serves, and
+ * compares the address it announces with this wallet's. That catches both
+ * ways of registering a broken agent: a URL that is not up yet, and a URL
+ * that does respond but belongs to someone else (copied from an example, or
+ * from another agent of yours).
  *
- * Importa porque el estado que evita es el peor de todos: aparecer en el
- * mercado, que alguien te contrate y que su encargo no llegue a ninguna parte.
- * Su dinero se queda bloqueado hasta que vence el plazo.
+ * It matters because the state it prevents is the worst of all: appearing in
+ * the market, someone hiring you and their brief going nowhere. Their money
+ * stays locked until the deadline expires.
  */
 async function compruebaEndpoint(botUrl: string, yo: string): Promise<string | null> {
   let url: string;
   try {
     url = rutaDeAgente(botUrl, 'agent.json');
   } catch {
-    return `PERFIL.botUrl no es una URL válida: ${botUrl}`;
+    return `PERFIL.botUrl is not a valid URL: ${botUrl}`;
   }
   if (!url.startsWith('https://')) {
     return (
-      `tu endpoint no es https (${botUrl}).\n` +
-      '  Por ahí viaja el encargo del cliente con su firma, y en claro lo lee cualquiera.'
+      `your endpoint is not https (${botUrl}).\n` +
+      "  The client's brief travels through it with their signature, and in plain text anyone can read it."
     );
   }
 
@@ -156,40 +156,41 @@ async function compruebaEndpoint(botUrl: string, yo: string): Promise<string | n
     res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   } catch (err) {
     return (
-      `tu endpoint no responde (${url}).\n` +
+      `your endpoint does not respond (${url}).\n` +
       `  ${err instanceof Error ? err.message : err}\n` +
-      '  Arranca el agente y expón el puerto con https ANTES de registrarte.'
+      '  Start the agent and expose the port over https BEFORE registering.'
     );
   }
-  if (!res.ok) return `tu endpoint respondió ${res.status} en ${url}, y debería devolver tu tarjeta.`;
+  if (!res.ok) return `your endpoint answered ${res.status} at ${url}, and it should return your card.`;
 
   let card: { agent?: string };
   try {
     card = (await res.json()) as { agent?: string };
   } catch {
-    return `${url} no devuelve JSON. ¿Seguro que ahí está tu agente y no otra cosa?`;
+    return `${url} does not return JSON. Are you sure your agent is there and not something else?`;
   }
-  if (!card.agent) return `${url} responde, pero no anuncia ninguna dirección. ¿Es tu agente de Panal?`;
+  if (!card.agent) return `${url} responds, but announces no address. Is it your Panal agent?`;
   if (card.agent.toLowerCase() !== yo.toLowerCase()) {
     return (
-      `esa URL es de OTRO agente.\n` +
-      `  ${url} dice ser ${card.agent}\n` +
-      `  y tú te estás registrando como ${yo}.`
+      `that URL belongs to ANOTHER agent.\n` +
+      `  ${url} claims to be ${card.agent}\n` +
+      `  and you are registering as ${yo}.`
     );
   }
   return null;
 }
 
 /**
- * Tu logo, si no lo has puesto a mano pero tu agente sirve uno.
+ * Your logo, if you did not set one by hand but your agent serves one.
  *
- * La plantilla te deja un `logo.svg` en la carpeta y el servidor lo publica en
- * `/logo`. Que exista el archivo no basta para escribirlo en la cadena: lo que
- * se guarda es una URL, y una URL que no responde es un hueco en la tarjeta que
- * cuesta otra transacción arreglar. Así que se pide de verdad antes de creerlo.
+ * The template leaves a `logo.svg` in the folder and the server publishes it
+ * at `/logo`. The file existing is not enough to write it on-chain: what gets
+ * stored is a URL, and a URL that does not respond is a hole in the card that
+ * costs another transaction to fix. So it is actually requested before being
+ * trusted.
  *
- * NUNCA lanza ni bloquea el registro. Un logo es un extra; quedarse sin
- * registrar por una imagen sería absurdo.
+ * NEVER throws or blocks registration. A logo is an extra; failing to
+ * register over an image would be absurd.
  */
 async function logoQueSirves(botUrl: string): Promise<string> {
   let url: string;
@@ -201,9 +202,9 @@ async function logoQueSirves(botUrl: string): Promise<string> {
   try {
     const res = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(8_000) });
     const tipo = res.headers.get('content-type') ?? '';
-    // `image/` y no `200` a secas: un servidor delante que devuelva la página
-    // de error en HTML con estado 200 dejaría escrito en la cadena un logo que
-    // no es una imagen, y en la tarjeta un hueco sin explicación.
+    // `image/` and not just `200`: a server in front returning its HTML error
+    // page with status 200 would write on-chain a logo that is not an image,
+    // and leave an unexplained hole in the card.
     return res.ok && tipo.startsWith('image/') ? url : '';
   } catch {
     return '';
@@ -213,99 +214,101 @@ async function logoQueSirves(botUrl: string): Promise<string> {
 async function main(): Promise<void> {
   const key = process.env.AGENT_PRIVATE_KEY?.trim();
   if (!key || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
-    console.error('Falta AGENT_PRIVATE_KEY en el .env (0x + 64 hex).');
+    console.error('AGENT_PRIVATE_KEY is missing from .env (0x + 64 hex).');
     process.exit(1);
   }
   const account = privateKeyToAccount(key as `0x${string}`);
   const panal = createPanalClient({ account, rpcUrl: process.env.RPC_URL });
 
-  // Lo primero, porque no cuesta nada y es lo que más se olvida.
+  // First, because it costs nothing and it is what gets forgotten most.
   const falta = loQueFaltaDelPerfil(PERFIL);
   if (falta) {
-    console.error(`No te registro todavía: ${falta}\n\nEstá todo en src/register.ts, arriba del todo.`);
+    console.error(`Not registering you yet: ${falta}\n\nIt is all in src/register.ts, at the very top.`);
     process.exit(1);
   }
 
   console.log(`Wallet:  ${account.address}`);
 
-  // El endpoint ANTES que el saldo, y no al revés: levantar un servidor con
-  // https es la parte larga, y mandar gas la corta. Decirle a alguien que le
-  // falta MON cuando su agente ni siquiera responde le hace resolver lo fácil
-  // para chocarse con lo difícil después.
+  // The endpoint BEFORE the balance, not the other way round: bringing up a
+  // server with https is the long part, and sending gas the short one. Telling
+  // someone they are short of MON when their agent does not even respond makes
+  // them solve the easy part only to hit the hard one later.
   if (process.env.REGISTRO_SIN_COMPROBAR === '1') {
-    console.log('\n(REGISTRO_SIN_COMPROBAR=1: no compruebo tu endpoint. Tú sabrás.)');
+    console.log('\n(REGISTRO_SIN_COMPROBAR=1: not checking your endpoint. Your call.)');
   } else {
     const roto = await compruebaEndpoint(PERFIL.botUrl, account.address);
     if (roto) {
       console.error(
-        `\nNo te registro: ${roto}\n\n` +
-          'Si sabes lo que haces y quieres registrarte igual, repite con REGISTRO_SIN_COMPROBAR=1.',
+        `\nNot registering you: ${roto}\n\n` +
+          'If you know what you are doing and want to register anyway, repeat with REGISTRO_SIN_COMPROBAR=1.',
       );
       process.exit(1);
     }
-    console.log(`Endpoint: ${PERFIL.botUrl} responde y es tuyo.`);
+    console.log(`Endpoint: ${PERFIL.botUrl} responds and is yours.`);
   }
 
   const balance = await panal.publicClient.getBalance({ address: account.address });
-  console.log(`Saldo:   ${formatEther(balance)} MON`);
+  console.log(`Balance: ${formatEther(balance)} MON`);
   if (balance === 0n) {
-    console.error('\nSin MON no puedes ni pagar el gas del registro. Manda un poco a esa dirección.');
+    console.error('\nWithout MON you cannot even pay the registration gas. Send a little to that address.');
     process.exit(1);
   }
 
-  // ¿Ya estabas? Registrarse dos veces revierte, así que se actualiza.
+  // Already there? Registering twice reverts, so it updates instead.
   const existente = await panal.getAgent(account.address).catch(() => null);
   const yaRegistrado = existente !== null && existente.registeredAt > 0n;
 
-  // Tu logo, si no lo pusiste a mano.
+  // Your logo, if you did not set it by hand.
   //
-  // Primero se mira si tu agente sirve uno; si no responde se conserva el que
-  // ya tuvieras publicado. Eso segundo importa más de lo que parece: sin ello,
-  // un corte de red de dos segundos durante un `npm run register` te borraría
-  // el logo de la ficha, y no lo dice nadie —la orden termina bien— hasta que
-  // alguien mira el mercado y ve el hexágono otra vez.
+  // First it checks whether your agent serves one; if it does not respond, the
+  // one you already had published is kept. That second part matters more than
+  // it seems: without it, a two-second network drop during an
+  // `npm run register` would wipe the logo from your profile, and nobody would
+  // say so —the command finishes fine— until someone looks at the market and
+  // sees the hexagon again.
   const puesto = PERFIL.links.logo.trim();
   const servido = puesto ? '' : await logoQueSirves(PERFIL.botUrl);
   const logo = puesto || servido || existente?.metadata.links.logo || '';
   const perfil = { ...PERFIL, links: { ...PERFIL.links, logo } };
-  if (!puesto && logo) console.log(`Logo:    ${logo}${servido ? '' : ' (el que ya tenías: tu /logo no responde)'}`);
+  if (!puesto && logo) console.log(`Logo:    ${logo}${servido ? '' : ' (the one you already had: your /logo does not respond)'}`);
 
-  console.log(`\nPerfil:  ${formatAgentMetadata(perfil)}`);
-  console.log(`Precio:  ${formatEther(PRECIO)} ${MONEDA === NATIVE_CURRENCY ? 'MON' : '$PANAL'} por tarea\n`);
+  console.log(`\nProfile: ${formatAgentMetadata(perfil)}`);
+  console.log(`Price:   ${formatEther(PRECIO)} ${MONEDA === NATIVE_CURRENCY ? 'MON' : '$PANAL'} per task\n`);
 
   if (yaRegistrado) {
-    console.log('Ya estabas registrado: actualizo el perfil y el precio.');
+    console.log('You were already registered: updating the profile and the price.');
     await panal.updateMetadata(perfil);
     await panal.updatePrice(PRECIO, MONEDA);
     if (!existente.active) {
       await panal.setActive(true);
-      console.log('Y te vuelvo a poner activo.');
+      console.log('And setting you active again.');
     }
   } else {
     await panal.registerAgent({ metadata: perfil, pricePerTask: PRECIO, currency: MONEDA });
-    console.log('Registrado.');
+    console.log('Registered.');
   }
 
-  // El nombre va DESPUÉS del registro y no puede tumbarlo: `reclamar` exige
-  // estar registrado y activo, así que el orden es obligatorio, y si algo falla
-  // —nombre cogido, sin saldo, contrato no desplegado— el agente ya está
-  // trabajando igual. El nombre es un extra, no un requisito.
+  // The name comes AFTER registration and cannot take it down: `reclamar`
+  // requires being registered and active, so the order is mandatory, and if
+  // something fails —name taken, no balance, contract not deployed— the agent
+  // is already working anyway. The name is an extra, not a requirement.
   await reclamaTuNombre(account, PERFIL.name);
 
-  console.log(`\nYa apareces en https://panal.lat/market`);
-  console.log(`Compruébalo desde Claude: "¿qué agentes hay en Panal?"`);
+  console.log(`\nYou now appear at https://panal.lat/market`);
+  console.log(`Check it from Claude: "which agents are on Panal?"`);
 }
 
 /**
- * Convierte el nombre del perfil en un handle válido para PanalNames.
+ * Turns the profile name into a valid PanalNames handle.
  *
- * El contrato solo acepta `a-z`, `0-9` y `-`, y ahí es donde mueren los
- * homoglifos: la `а` cirílica no colisiona con la latina, es que no se puede
- * escribir. Así que "LexPanal" pasa a `lexpanal` y "Traductor ES→DE" a
- * `traductor-es-de`.
+ * The contract only accepts `a-z`, `0-9` and `-`, and that is where homoglyphs
+ * die: the Cyrillic `а` does not collide with the Latin one, it simply cannot
+ * be written. So "LexPanal" becomes `lexpanal` and "Translator ES→DE"
+ * becomes `translator-es-de`.
  *
- * Los acentos se quitan descomponiendo el texto (NFD) y tirando las marcas:
- * "Ágil" -> `agil`. Transliterar a ojo cada idioma sería inventar.
+ * Accents are removed by decomposing the text (NFD) and dropping the marks:
+ * "Ágil" -> `agil`. Transliterating each language by eye would be making
+ * things up.
  */
 export function aHandle(nombre: string): string {
   return nombre
@@ -319,16 +322,17 @@ export function aHandle(nombre: string): string {
 }
 
 /**
- * PanalNames en Monad mainnet, desplegado el 2026-08-14 en el bloque 95750662.
+ * PanalNames on Monad mainnet, deployed on 2026-08-14 at block 95750662.
  *
- * Es quien reparte los nombres unicos. Hoy reclamar no cuesta nada: la tarifa
- * esta a cero para que un agente recien creado —que tiene MON para gas y cero
- * $PANAL— pueda quedarse con el suyo desde el primer minuto.
+ * It hands out the unique names. Claiming costs nothing today: the fee is at
+ * zero so that a freshly created agent —which has MON for gas and zero
+ * $PANAL— can get its own from the first minute.
  *
- * Se puede apuntar a otro con PANAL_NAMES_ADDRESS.
+ * It can be pointed elsewhere with PANAL_NAMES_ADDRESS.
  */
 const PANAL_NAMES = '0xc94a8107C87859cAd2E472e71BbE25c15cdD614A';
 
+// Function names are the contract's own (in Spanish) and must not be changed.
 const NOMBRES_ABI = [
   {
     type: 'function',
@@ -361,14 +365,14 @@ const NOMBRES_ABI = [
 ] as const;
 
 /**
- * Reclama tu nombre único en PanalNames, si se puede.
+ * Claims your unique name in PanalNames, if possible.
  *
- * NUNCA lanza. Todo lo que puede salir mal aquí —que el contrato no esté
- * desplegado, que el nombre esté cogido, que no tengas saldo— es un extra que
- * no sale, y el agente ya está registrado y trabajando. Se avisa y se sigue.
+ * NEVER throws. Everything that can go wrong here —the contract not deployed,
+ * the name taken, no balance— is an extra that does not happen, and the agent
+ * is already registered and working. It warns and carries on.
  *
- * Se hace en el mismo comando a propósito: si hay que volver días después a
- * reclamarlo, para entonces se lo habrá quedado otro.
+ * It is done in the same command on purpose: if you have to come back days
+ * later to claim it, by then someone else will have taken it.
  */
 async function reclamaTuNombre(account: ReturnType<typeof privateKeyToAccount>, nombre: string): Promise<void> {
   const contrato = process.env.PANAL_NAMES_ADDRESS?.trim() || PANAL_NAMES;
@@ -376,11 +380,11 @@ async function reclamaTuNombre(account: ReturnType<typeof privateKeyToAccount>, 
 
   const handle = aHandle(nombre);
   if (handle.length < 3) {
-    // Pasa con los nombres en alfabetos no latinos: el contrato solo acepta
-    // `a-z0-9-`, que es lo que impide los homoglifos, así que de "日本語" no
-    // sale nada. No es un fallo, pero hay que decir qué hacer.
-    console.log(`\nNo te reclamo nombre: de "${nombre}" no sale un handle de 3 letras o más.`);
-    console.log(`Los nombres solo admiten a-z, 0-9 y guion. Elige uno a mano desde https://panal.lat/dashboard`);
+    // Happens with names in non-Latin alphabets: the contract only accepts
+    // `a-z0-9-`, which is what prevents homoglyphs, so nothing comes out of
+    // "日本語". Not a failure, but it has to say what to do.
+    console.log(`\nNot claiming a name for you: "${nombre}" does not yield a handle of 3 letters or more.`);
+    console.log(`Names only allow a-z, 0-9 and dashes. Pick one by hand at https://panal.lat/dashboard`);
     return;
   }
 
@@ -393,36 +397,37 @@ async function reclamaTuNombre(account: ReturnType<typeof privateKeyToAccount>, 
 
     const yaTengo = await publico.readContract({ address: donde, abi: NOMBRES_ABI, functionName: 'nombreDe', args: [account.address] });
     if (yaTengo) {
-      console.log(`\nTu nombre en Panal ya es: ${yaTengo}`);
+      console.log(`\nYour name on Panal is already: ${yaTengo}`);
       return;
     }
 
     const libre = await publico.readContract({ address: donde, abi: NOMBRES_ABI, functionName: 'disponible', args: [handle] });
     if (!libre) {
-      console.log(`\nEl nombre "${handle}" ya está cogido. Puedes reclamar otro desde https://panal.lat/dashboard`);
+      console.log(`\nThe name "${handle}" is already taken. You can claim another at https://panal.lat/dashboard`);
       return;
     }
 
     const tarifa = await publico.readContract({ address: donde, abi: NOMBRES_ABI, functionName: 'tarifaDe', args: [handle] });
     if (tarifa > 0n) {
-      // Con tarifa hay que aprobar el gasto antes, y eso es otra firma y otra
-      // decision. No se hace a tus espaldas: se te dice y lo haces tu.
-      console.log(`\nTu nombre "${handle}" está libre, pero cuesta ${formatEther(tarifa)} $PANAL.`);
-      console.log(`Reclámalo desde https://panal.lat/dashboard cuando quieras.`);
+      // With a fee the spend has to be approved first, and that is another
+      // signature and another decision. It is not done behind your back: you
+      // are told and you do it.
+      console.log(`\nYour name "${handle}" is free, but it costs ${formatEther(tarifa)} $PANAL.`);
+      console.log(`Claim it at https://panal.lat/dashboard whenever you like.`);
       return;
     }
 
     const hash = await cartera.writeContract({ address: donde, abi: NOMBRES_ABI, functionName: 'reclamar', args: [handle], chain });
     await publico.waitForTransactionReceipt({ hash });
-    console.log(`\nTu nombre único en Panal: ${handle}`);
+    console.log(`\nYour unique name on Panal: ${handle}`);
   } catch (err) {
-    // Un fallo aqui no es grave: el agente ya esta registrado y puede trabajar.
-    console.log(`\nNo pude reclamarte el nombre (${err instanceof Error ? err.message.split('\n')[0] : err}).`);
-    console.log(`Puedes hacerlo luego desde https://panal.lat/dashboard`);
+    // A failure here is not serious: the agent is already registered and can work.
+    console.log(`\nCould not claim the name for you (${err instanceof Error ? err.message.split('\n')[0] : err}).`);
+    console.log(`You can do it later at https://panal.lat/dashboard`);
   }
 }
 
 main().catch((err) => {
-  console.error(`\nFalló: ${err instanceof Error ? err.message : err}`);
+  console.error(`\nFailed: ${err instanceof Error ? err.message : err}`);
   process.exit(1);
 });

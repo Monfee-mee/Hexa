@@ -1,25 +1,26 @@
 /**
- * El motor de tu agente. NO hace falta que toques este archivo.
+ * Your agent's engine. You do NOT need to touch this file.
  *
- * Se ocupa de las tres cosas que un agente de Panal tiene que hacer bien y que
- * son fáciles de hacer mal:
+ * It takes care of the three things a Panal agent has to do well and that are
+ * easy to get wrong:
  *
- *   1. RECIBIR el encargo. El brief no viaja on-chain —solo su hash—, así que
- *      el cliente te lo manda firmado a `POST /brief`. Se comprueba que la
- *      firma sea suya de verdad y que la tarea exista y sea para ti.
- *   2. TRABAJAR y ENTREGAR. Llama a tu `handleTask()` y ancla el keccak256 del
- *      resultado con `deliverResult`. A partir de ahí el pago es tuyo salvo
- *      disputa, y a las 72 h se libera solo.
- *   3. SERVIR el resultado. El cliente lo descarga de `GET /result/:id`
- *      firmando, sin gastar gas.
+ *   1. RECEIVE the brief. The brief does not travel on-chain —only its hash—,
+ *      so the client sends it to you signed at `POST /brief`. It checks that
+ *      the signature really is theirs and that the task exists and is yours.
+ *   2. WORK and DELIVER. It calls your `handleTask()` and anchors the
+ *      keccak256 of the result with `deliverResult`. From then on the payment
+ *      is yours barring a dispute, and it releases itself after 72 h.
+ *   3. SERVE the result. The client downloads it from `GET /result/:id` by
+ *      signing, without spending gas.
  *
- * Es reactivo a propósito: no vigila la cadena en bucle, reacciona a lo que le
- * llega. Así funciona igual en un servidor de siempre que en un contenedor que
- * arranca y para, y no consume RPC cuando no hay trabajo.
+ * It is reactive on purpose: it does not watch the chain in a loop, it reacts
+ * to what comes in. That way it works the same on a regular server as in a
+ * container that starts and stops, and uses no RPC when there is no work.
  */
 
-// Carga el .env ANTES que nada: si esto falta, el servidor no ve la clave que
-// el generador dejó ahí y muere diciendo que falta, con el fichero delante.
+// Load .env BEFORE anything else: without this, the server does not see the
+// key the generator left there and dies saying it is missing, with the file
+// right in front of it.
 import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -72,29 +73,30 @@ const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.DATA_DIR ?? './data';
 
 /**
- * Tope del encargo, en CARACTERES, y anunciado en `/agent.json`.
+ * Brief cap, in CHARACTERS, announced in `/agent.json`.
  *
- * Va en caracteres y no en bytes porque es lo que el cliente puede contar
- * antes de pagar: el tope de cuerpo de arriba protege el proceso, pero nadie
- * sabe cuántos kilobytes ocupa su texto. Sin un número publicado, un encargo
- * demasiado largo se descubre PAGANDO —el pago queda bloqueado, el agente
- * responde 400, y el cliente espera al plazo para recuperarlo.
+ * It is in characters and not bytes because that is what the client can
+ * count before paying: the body cap protects the process, but nobody knows
+ * how many kilobytes their text takes. Without a published number, a brief
+ * that is too long is discovered BY PAYING —the payment is locked, the agent
+ * answers 400, and the client waits for the deadline to get it back.
  *
- * El límite real lo pone MAX_BODY; este número queda holgadamente por debajo
- * (32k caracteres son unos 128 KB incluso en el peor caso de UTF-8) para que
- * lo que se promete se cumpla siempre, y no solo con texto latino.
+ * The real limit is set by MAX_BODY; this number sits comfortably below it
+ * (32k characters are about 128 KB even in the worst UTF-8 case) so that what
+ * is promised always holds, and not only with Latin text.
  */
 const MAX_BRIEF_CHARS = 32_000;
 
 // ---------------------------------------------------------------------------
-// Niveles: el mismo trabajo en varios tamaños.
+// Tiers: the same job in several sizes.
 //
-// Los declara el agente en `agent.ts` y son OPCIONALES. Sin ninguno, todo lo
-// de aquí abajo se queda en los valores de siempre y este bloque no hace nada.
+// The agent declares them in `agent.ts` and they are OPTIONAL. With none,
+// everything below keeps the usual values and this block does nothing.
 //
-// Se pasan por `leerNiveles`, que es EL MISMO lector que usarán la web y la
-// app al leer la ficha. Así un agente no puede publicar un nivel que sus
-// propios clientes van a descartar: si aquí no sobrevive, no se anuncia.
+// They go through `leerNiveles`, which is THE SAME reader the web and the app
+// will use when reading the profile. That way an agent cannot publish a tier
+// its own clients will discard: if it does not survive here, it is not
+// announced.
 // ---------------------------------------------------------------------------
 
 let NIVELES_OK = leerNiveles({
@@ -103,64 +105,64 @@ let NIVELES_OK = leerNiveles({
 
 if (NIVELES.length > 0 && NIVELES_OK.length !== NIVELES.length) {
   console.error(
-    `[panal] ${NIVELES.length - NIVELES_OK.length} nivel(es) de agent.ts están mal escritos y no se van a anunciar. ` +
-      'Cada uno necesita un `wei` positivo.',
+    `[panal] ${NIVELES.length - NIVELES_OK.length} tier(s) in agent.ts are malformed and will not be announced. ` +
+      'Each one needs a positive `wei`.',
   );
 }
 
-/** El nivel más barato: por debajo de eso, un agente con niveles no trabaja. */
+/** The cheapest tier: below it, an agent with tiers does not work. */
 let NIVEL_MINIMO = NIVELES_OK[0] ?? null;
 
-// Se dicen al arrancar. Antes sólo salían dentro del bloque de subcontratación
-// —que no se imprime si no hay presupuesto—, así que un agente con niveles y
-// sin subcontratar arrancaba sin decir una palabra de lo que vende, y la única
-// forma de saber si habían entrado era pedirle la tarjeta.
+// Printed at startup. They used to show only inside the delegation block
+// —which is not printed without a budget—, so an agent with tiers and no
+// delegation started without saying a word about what it sells, and the only
+// way to know whether they were loaded was to ask for its card.
 if (NIVELES_OK.length > 0) {
-  console.log(`Niveles (${NIVELES_OK.length}):`);
+  console.log(`Tiers (${NIVELES_OK.length}):`);
   for (const n of NIVELES_OK) {
     const topes = [
-      n.maxBriefChars === null ? null : `encargo ${n.maxBriefChars}`,
-      n.maxAttachCharsTotal === null ? null : `adjuntos ${n.maxAttachCharsTotal}`,
+      n.maxBriefChars === null ? null : `brief ${n.maxBriefChars}`,
+      n.maxAttachCharsTotal === null ? null : `attachments ${n.maxAttachCharsTotal}`,
     ].filter(Boolean);
-    console.log(`  ${n.name ?? '(sin nombre)'} · ${n.wei} · ${topes.length ? topes.join(', ') : 'topes de siempre'}`);
+    console.log(`  ${n.name ?? '(no name)'} · ${n.wei} · ${topes.length ? topes.join(', ') : 'default caps'}`);
   }
 }
 
-// Un nivel que se gasta subcontratando lo mismo que cobra trabaja gratis, y si
-// se pasa, trabaja pagando. No se corrige solo —es una decisión del autor— pero
-// no puede quedarse callado.
+// A tier that spends on delegation as much as it charges works for free, and
+// if it spends more, it pays to work. It is not corrected automatically —it is
+// the author's decision— but it cannot stay silent.
 for (const n of NIVELES) {
   if (n.subcontrata !== undefined && n.subcontrata >= n.wei) {
     console.error(
-      `[panal] el nivel "${n.name}" cobra ${n.wei} y puede gastar ${n.subcontrata} subcontratando: ` +
-        'no te queda nada por el trabajo.',
+      `[panal] tier "${n.name}" charges ${n.wei} and may spend ${n.subcontrata} delegating: ` +
+        'nothing is left for the work.',
     );
   }
 }
 
 
-/** El tope de encargo del nivel mayor, o el de siempre si no hay niveles. */
+/** The brief cap of the largest tier, or the usual one without tiers. */
 let TOPE_BRIEF_MAYOR = Math.max(MAX_BRIEF_CHARS, ...NIVELES_OK.map((n) => n.maxBriefChars ?? 0));
 
 /**
- * Tope del cuerpo de una petición: sin esto, cualquiera te tumba el proceso.
+ * Request body cap: without it, anyone can take your process down.
  *
- * Sale del nivel MAYOR y no de un número redondo, porque prometer 320 000
- * caracteres y cortar el cuerpo a 256 KB es prometer algo que no se cumple.
- * El ×4 es el peor caso de UTF-8 —un carácter puede ocupar cuatro bytes— y
- * los 32 KB de propina cubren el resto del JSON: la firma, la dirección y el
- * manifiesto de adjuntos que viaja dentro del encargo.
+ * It comes from the LARGEST tier and not a round number, because promising
+ * 320,000 characters and cutting the body at 256 KB is promising something
+ * that does not hold. The ×4 is the worst UTF-8 case —a character can take
+ * four bytes— and the extra 32 KB cover the rest of the JSON: the signature,
+ * the address and the attachments manifest that travels inside the brief.
  */
 let MAX_BODY = Math.max(256 * 1024, TOPE_BRIEF_MAYOR * 4 + 32 * 1024);
 
 /**
- * Los tres números de arriba se recalculan cuando cambian los niveles.
+ * The three numbers above are recomputed when the tiers change.
  *
- * Cambian porque ahora se pueden editar desde la web sin tocar este código:
- * viven en el `metadataURI` on-chain y el dueño del agente los mueve firmando
- * una transacción. Si estos números se quedaran con lo que había al arrancar,
- * un nivel nuevo de 320 000 caracteres se anunciaría y luego se rechazaría por
- * pasarse del tope, que es la peor de las dos opciones: se cobra y no se hace.
+ * They change because they can now be edited from the web without touching
+ * this code: they live in the on-chain `metadataURI` and the agent's owner
+ * moves them by signing a transaction. If these numbers kept their startup
+ * values, a new 320,000-character tier would be announced and then rejected
+ * for exceeding the cap, which is the worst of both: charged and not done.
  */
 function recalcularTopes(): void {
   NIVEL_MINIMO = NIVELES_OK[0] ?? null;
@@ -168,7 +170,7 @@ function recalcularTopes(): void {
   MAX_BODY = Math.max(256 * 1024, TOPE_BRIEF_MAYOR * 4 + 32 * 1024);
 }
 
-/** Un nivel ya validado, en la forma con la que se anuncia y se devuelve. */
+/** An already validated tier, in the shape it is announced and returned in. */
 function comoFicha(n: Nivel): FichaNivel {
   return {
     ...(n.name === null ? {} : { name: n.name }),
@@ -180,19 +182,19 @@ function comoFicha(n: Nivel): FichaNivel {
   };
 }
 
-/** Qué nivel compró quien bloqueó esto. `null` si el agente no vende niveles. */
+/** Which tier whoever locked this bought. `null` if the agent sells no tiers. */
 function nivelDe(pagado: bigint): NivelPropio | null {
   if (NIVELES_OK.length === 0) return null;
   const leido = nivelPara(NIVELES_OK, pagado);
   if (!leido) return null;
-  // Se prefiere el declarado en `agent.ts`: es el que tiene los tipos que el
-  // autor del agente espera en `ctx.nivel`, y el único que puede traer
-  // `subcontrata`, que no cabe en la ficha on-chain.
+  // The one declared in `agent.ts` is preferred: it has the types the agent's
+  // author expects in `ctx.nivel`, and it is the only one that can carry
+  // `subcontrata`, which does not fit in the on-chain profile.
   const propio = NIVELES.find((n) => n.wei === leido.wei);
   if (propio) return propio;
-  // Y si viene de la CADENA, se arma uno. Devolver null aquí sería lo peor que
-  // podría pasar: el cliente pagó el nivel grande, lo vio anunciado y el
-  // agente trabajaría creyendo que no compró ninguno.
+  // And if it comes from the CHAIN, one is built. Returning null here would be
+  // the worst possible outcome: the client paid for the big tier, saw it
+  // announced, and the agent would work believing they bought none.
   return {
     name: leido.name ?? '',
     ...(leido.description === null ? {} : { description: leido.description }),
@@ -205,39 +207,40 @@ function nivelDe(pagado: bigint): NivelPropio | null {
 
 const key = process.env.AGENT_PRIVATE_KEY?.trim();
 if (!key || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
-  console.error('Falta AGENT_PRIVATE_KEY (0x + 64 hex) en el .env. Copia .env.example y rellénalo.');
+  console.error('AGENT_PRIVATE_KEY (0x + 64 hex) is missing from .env. Copy .env.example and fill it in.');
   process.exit(1);
 }
 const account = privateKeyToAccount(key as `0x${string}`);
 const panal = createPanalClient({ account, rpcUrl: process.env.RPC_URL });
 
-console.log(`Agente ${account.address} escuchando en :${PORT}`);
+console.log(`Agent ${account.address} listening on :${PORT}`);
 
 // ---------------------------------------------------------------------------
-// Los niveles de la CADENA mandan sobre los de `agent.ts`.
+// The tiers on the CHAIN override those in `agent.ts`.
 //
-// Se pueden editar desde el panel de la web sin tocar una línea de código: van
-// dentro del `metadataURI`, y cambiarlos es una transacción. Este bloque los
-// lee y los deja al mando, porque son LOS QUE VIO EL CLIENTE: es contra la
-// ficha on-chain contra lo que eligió tamaño y contra lo que bloqueó el dinero,
-// así que trabajar con otros sería cobrar por una cosa y hacer otra.
+// They can be edited from the web dashboard without touching a line of code:
+// they live inside the `metadataURI`, and changing them is a transaction. This
+// block reads them and puts them in charge, because they are WHAT THE CLIENT
+// SAW: the client picked a size and locked the money against the on-chain
+// profile, so working with different ones would mean charging for one thing
+// and doing another.
 //
-// Se relee cada rato, y no solo al arrancar, porque el sentido de haberlos
-// sacado del código es justamente no tener que reiniciar nada para cambiarlos.
-// Si la lectura falla, se queda lo que hubiera: un RPC lento no puede dejar sin
-// niveles a un agente que los tiene.
+// They are re-read periodically, and not only at startup, because the whole
+// point of moving them out of the code is not having to restart anything to
+// change them. If the read fails, whatever was there stays: a slow RPC cannot
+// leave an agent that has tiers without them.
 // ---------------------------------------------------------------------------
 
-/** Cada cuánto se vuelve a mirar la ficha. */
+/** How often the profile is checked again. */
 const REFRESCO_NIVELES = 5 * 60 * 1000;
 
 /**
- * El modelo con el que este agente traduce SU PROPIA ficha para `?lang=`.
+ * The model this agent uses to translate ITS OWN profile for `?lang=`.
  *
- * Se resuelve una vez y falla a `null` en vez de tumbar el arranque: un agente
- * sin `LLM_API_KEY` es un agente perfectamente válido —hay agentes que no usan
- * modelo ninguno— y quedarse sin poder servir la ficha por no poder traducirla
- * sería dejarlo fuera del mercado por un lujo. Sin modelo, ficha original.
+ * Resolved once, falling back to `null` instead of crashing startup: an agent
+ * without `LLM_API_KEY` is a perfectly valid agent —some agents use no model
+ * at all— and being unable to serve the profile for lack of a translation
+ * would keep it out of the market over a luxury. No model, original profile.
  */
 const LLM_FICHA: LlmConfig | null = (() => {
   try {
@@ -247,15 +250,15 @@ const LLM_FICHA: LlmConfig | null = (() => {
   }
 })();
 
-/** Los de `agent.ts`, para poder volver a ellos si la ficha se queda sin niveles. */
+/** Those from `agent.ts`, to fall back on if the profile ends up with no tiers. */
 const NIVELES_DEL_CODIGO = NIVELES_OK;
 
 /**
- * El nombre y la descripción que este agente tiene EN LA CADENA.
+ * The name and description this agent has ON-CHAIN.
  *
- * La plantilla no los tenía: su `/agent.json` publicaba endpoints y precios, y
- * el texto salía solo del registro. Hacen falta aquí para poder servirlos
- * TRADUCIDOS, que es lo que pide `?lang=`.
+ * The template did not have them: its `/agent.json` published endpoints and
+ * prices, and the text came only from the registry. They are needed here to
+ * serve them TRANSLATED, which is what `?lang=` asks for.
  */
 let FICHA_TEXTO: { name: string; description: string } = { name: '', description: '' };
 
@@ -274,37 +277,38 @@ async function refrescarNiveles(): Promise<void> {
       recalcularTopes();
       console.log(
         NIVELES_OK.length > 0
-          ? `[panal] niveles actualizados desde la cadena (${NIVELES_OK.length}): ` +
+          ? `[panal] tiers updated from the chain (${NIVELES_OK.length}): ` +
               NIVELES_OK.map((n) => `${n.name ?? '?'} ${n.wei}`).join(', ')
-          : '[panal] este agente ya no publica niveles',
+          : '[panal] this agent no longer publishes tiers',
       );
     }
   } catch {
-    // Sin RPC, con la ficha ilegible o con el agente aún sin registrar: se
-    // queda lo que hubiera. Callado, porque esto corre cada cinco minutos y un
-    // aviso por cada fallo llenaría el log de un agente que funciona.
+    // No RPC, an unreadable profile or the agent not registered yet: whatever
+    // was there stays. Silently, because this runs every five minutes and a
+    // warning per failure would flood the log of an agent that works.
   }
 }
 
-// La primera va ANTES de escuchar: `MAX_BODY` sale del tope del nivel mayor, y
-// arrancar con el número viejo sería anunciar un encargo de 320 000 caracteres
-// y cortarlo al recibirlo.
+// The first one runs BEFORE listening: `MAX_BODY` comes from the largest
+// tier's cap, and starting with the old number would mean announcing a
+// 320,000-character brief and cutting it on arrival.
 await refrescarNiveles();
 setInterval(() => void refrescarNiveles(), REFRESCO_NIVELES).unref();
 
 // ---------------------------------------------------------------------------
-// x402: cobrar por llamada, sin escrow.
+// x402: charging per call, without escrow.
 //
-// El escrow es para encargos que valen algo: bloquea el pago, hay plazo y hay
-// disputa. Para una consulta de dos milésimas todo eso sobra —el trámite cuesta
-// más que el servicio—, y ahí entra x402: el cliente firma una autorización de
-// pago (gratis, sin gas), tú cobras y respondes en la misma llamada.
+// The escrow is for jobs worth something: it locks the payment, there is a
+// deadline and there are disputes. For a query worth two thousandths all that
+// is overkill —the paperwork costs more than the service—, and that is where
+// x402 comes in: the client signs a payment authorization (free, no gas), you
+// get paid and answer in the same call.
 //
-// Es OPCIONAL: sin X402_PRICE en el .env, esta ruta no existe y tu agente
-// funciona igual solo con encargos del escrow.
+// It is OPTIONAL: without X402_PRICE in .env, this route does not exist and
+// your agent works the same with escrow jobs only.
 //
-// Solo se puede cobrar en un ERC-20 con EIP-2612, no en MON: el esquema entero
-// se apoya en `permit`, y la moneda nativa no lo tiene.
+// It can only charge in an ERC-20 with EIP-2612, not in MON: the whole scheme
+// relies on `permit`, and the native currency does not have it.
 // ---------------------------------------------------------------------------
 
 const X402_PRICE = (() => {
@@ -314,7 +318,7 @@ const X402_PRICE = (() => {
     const wei = parseEther(raw);
     return wei > 0n ? wei : null;
   } catch {
-    console.error(`X402_PRICE="${raw}" no es un número válido: el cobro por llamada queda desactivado.`);
+    console.error(`X402_PRICE="${raw}" is not a valid number: pay-per-call is disabled.`);
     return null;
   }
 })();
@@ -323,30 +327,32 @@ const X402_TOKEN: Address = (() => {
   return raw && isAddress(raw) ? (raw as Address) : MAINNET_ADDRESSES.panalToken;
 })();
 const X402_SYMBOL = process.env.X402_SYMBOL?.trim() || '$PANAL';
-// En inglés porque viaja en el 402 y lo lee un desconocido de cualquier parte.
-// Cámbialo por lo tuyo con X402_DESCRIPTION en el .env.
+// In English because it travels in the 402 and is read by a stranger from
+// anywhere. Replace it with yours via X402_DESCRIPTION in .env.
 const X402_DESCRIPTION = process.env.X402_DESCRIPTION?.trim() || 'One question to the agent, answered on the spot.';
 
 if (X402_PRICE !== null) {
-  console.log(`Cobro por llamada activo: ${process.env.X402_PRICE} ${X402_SYMBOL} en POST /x402/ask`);
+  console.log(`Pay-per-call active: ${process.env.X402_PRICE} ${X402_SYMBOL} at POST /x402/ask`);
 }
 
 // ---------------------------------------------------------------------------
-// SUBCONTRATAR: lo que tu agente puede gastarse en preguntar a otros
+// DELEGATION: what your agent may spend asking others
 // ---------------------------------------------------------------------------
 //
-// Tu agente puede pagar a otro por lo que no sepa hacer (ver `ctx.consultar` en
-// agent.ts). Eso es dinero suyo saliendo, así que necesita un tope, y el tope
-// se pone AQUÍ y no en el prompt: un prompt se negocia, un número no.
+// Your agent can pay another one for what it cannot do (see `ctx.consultar` in
+// agent.ts). That is its own money going out, so it needs a cap, and the cap
+// is set HERE and not in the prompt: a prompt can be negotiated, a number
+// cannot.
 //
-// Va en la moneda del x402 —$PANAL por defecto— y NO se deduce de lo que cobras
-// por la tarea. Es tentador decir "que gaste como mucho el 30 % de lo que le
-// pagan", pero una tarea se cobra en MON y una consulta se paga en $PANAL: son
-// monedas distintas sin tipo de cambio, y convertir una en otra a ojo sería
-// inventarse el presupuesto. Si no pones nada, tu agente no delega.
+// It is in the x402 currency —$PANAL by default— and is NOT deducted from
+// what you charge for the task. It is tempting to say "spend at most 30% of
+// what it gets paid", but a task is paid in MON and a query in $PANAL: they
+// are different currencies with no exchange rate, and converting one into the
+// other by eye would be making up the budget. If you set nothing, your agent
+// does not delegate.
 //
-//   SUBCONTRATA_MAX=0.5     # como mucho 0,5 $PANAL por encargo
-//   SUBCONTRATA_SALTOS=2    # cuántos agentes puede encadenar (tope duro: 8)
+//   SUBCONTRATA_MAX=0.5     # at most 0.5 $PANAL per job
+//   SUBCONTRATA_SALTOS=2    # how many agents it can chain (hard cap: 8)
 //
 const SUBCONTRATA_MAX = (() => {
   const raw = process.env.SUBCONTRATA_MAX?.trim();
@@ -355,7 +361,7 @@ const SUBCONTRATA_MAX = (() => {
     const wei = parseEther(raw);
     return wei > 0n ? wei : 0n;
   } catch {
-    console.error(`SUBCONTRATA_MAX="${raw}" no es un número válido: tu agente no subcontratará.`);
+    console.error(`SUBCONTRATA_MAX="${raw}" is not a valid number: your agent will not delegate.`);
     return 0n;
   }
 })();
@@ -365,45 +371,47 @@ const SUBCONTRATA_SALTOS = (() => {
 })();
 
 if (SUBCONTRATA_MAX > 0n) {
-  // Se dice el estado REAL, no sólo el del dinero. Antes bastaba con tener
-  // presupuesto; ahora hacen falta las dos cosas, y un log que dijera "activa"
-  // con la lista vacía haría perder la tarde a quien se pregunte por qué su
-  // agente nunca delega.
+  // The REAL state is reported, not just the money. Having a budget used to be
+  // enough; now both are needed, and a log saying "active" with an empty list
+  // would cost an afternoon to whoever wonders why their agent never
+  // delegates.
   if (SUBCONTRATA_SKILLS.length > 0) {
     console.log(
-      `Subcontratación activa: hasta ${process.env.SUBCONTRATA_MAX} ${X402_SYMBOL} por encargo, ` +
-        `y sólo en: ${SUBCONTRATA_SKILLS.join(', ')}`,
+      `Delegation active: up to ${process.env.SUBCONTRATA_MAX} ${X402_SYMBOL} per job, ` +
+        `and only for: ${SUBCONTRATA_SKILLS.join(', ')}`,
     );
   } else {
     console.log(
-      `Subcontratación con presupuesto (${process.env.SUBCONTRATA_MAX} ${X402_SYMBOL}) pero SIN skills ` +
-        'permitidas: no va a delegar. Rellena SUBCONTRATA_SKILLS en agent.ts.',
+      `Delegation has a budget (${process.env.SUBCONTRATA_MAX} ${X402_SYMBOL}) but NO allowed ` +
+        'skills: it will not delegate. Fill in SUBCONTRATA_SKILLS in agent.ts.',
     );
   }
 
-  // Lo que te pagan por una consulta es el techo de lo que puedes gastarte en
-  // ella. Con SUBCONTRATA_MAX igual o mayor que X402_PRICE, un encargo en el
-  // que delegues te deja a cero o en pérdidas, y encima pones el gas. Lo malo
-  // de ese ajuste es que castiga justo lo que quieres que haga: cuanto mejor
-  // reconozca tu agente lo que no sabe, más veces trabaja gratis.
+  // What you get paid for a query is the ceiling of what you can spend on it.
+  // With SUBCONTRATA_MAX equal to or above X402_PRICE, a job you delegate
+  // leaves you at zero or at a loss, and you pay the gas on top. The bad part
+  // of that setting is that it punishes exactly what you want it to do: the
+  // better your agent recognizes what it does not know, the more often it
+  // works for free.
   //
-  // No se corrige solo —es tu precio y tu decisión— pero se dice, porque el
-  // síntoma es un saldo que no sube y eso no se parece en nada a la causa.
+  // It is not corrected automatically —it is your price and your decision—
+  // but it is said, because the symptom is a balance that does not grow and
+  // that looks nothing like the cause.
   if (X402_PRICE !== null && SUBCONTRATA_MAX >= X402_PRICE) {
     console.warn(
-      `[panal] SUBCONTRATA_MAX (${process.env.SUBCONTRATA_MAX}) no es menor que X402_PRICE ` +
-        `(${process.env.X402_PRICE}) ${X402_SYMBOL}: cada consulta en la que delegues te deja sin ` +
-        `margen, o en pérdidas contando el gas. Ponlo en una fracción de lo que cobras.`,
+      `[panal] SUBCONTRATA_MAX (${process.env.SUBCONTRATA_MAX}) is not lower than X402_PRICE ` +
+        `(${process.env.X402_PRICE}) ${X402_SYMBOL}: every query you delegate leaves you with no ` +
+        `margin, or at a loss counting gas. Set it to a fraction of what you charge.`,
     );
   }
 }
 
 /**
- * El dominio EIP-712 del token, leído de la cadena una sola vez.
+ * The token's EIP-712 domain, read from the chain only once.
  *
- * Se cachea porque no cambia nunca y leerlo en cada petición añade una llamada
- * al RPC al camino de una respuesta que cobras al momento. Si el RPC falla, se
- * vuelve a intentar en la siguiente: no se cachea el error.
+ * Cached because it never changes and reading it on every request adds an RPC
+ * call to the path of an answer you charge for on the spot. If the RPC fails,
+ * it is retried on the next one: the error is not cached.
  */
 let dominioCache: PermitDomain | null = null;
 async function dominioPermit(): Promise<PermitDomain> {
@@ -412,19 +420,19 @@ async function dominioPermit(): Promise<PermitDomain> {
 }
 
 // ---------------------------------------------------------------------------
-// Almacén: los resultados en disco, para poder servirlos después.
+// Storage: results on disk, so they can be served later.
 // ---------------------------------------------------------------------------
 
 mkdirSync(DATA_DIR, { recursive: true });
 const resultPath = (taskId: bigint) => join(DATA_DIR, `result-${taskId}.txt`);
-/** Carpeta de los archivos de una tarea. Una por tarea, para no mezclarlas. */
+/** Folder for a task's files. One per task, so they do not mix. */
 const filesDir = (taskId: bigint) => join(DATA_DIR, 'files', taskId.toString());
 /**
- * Carpeta de lo que MANDA el cliente, separada de lo que entrega el agente.
+ * Folder for what the client SENDS, kept apart from what the agent delivers.
  *
- * Mezclarlas sería servir por `/files/:id/:name` un archivo que subió el
- * cliente como si fuera parte de la entrega, con su hash anclado y todo. No lo
- * es: son las dos direcciones del mismo mecanismo y no se tocan.
+ * Mixing them would mean serving via `/files/:id/:name` a file the client
+ * uploaded as if it were part of the delivery, hash anchored and all. It is
+ * not: they are the two directions of the same mechanism and never touch.
  */
 const inboxDir = (taskId: bigint) => join(DATA_DIR, 'inbox', taskId.toString());
 
@@ -440,21 +448,21 @@ function loadResult(taskId: bigint): string | null {
 }
 
 /**
- * El encargo recibido, guardado en cuanto llega y antes de trabajar.
+ * The received brief, saved as soon as it arrives and before working.
  *
- * No es un caché: es lo único que permite retomar una tarea si el proceso se
- * muere a mitad. El escrow guarda `keccak256(encargo)`, no el encargo, así que
- * si no lo guardas tú aquí, un reinicio lo pierde para siempre y la tarea se
- * queda abierta con el dinero del cliente dentro hasta que vence el plazo.
+ * It is not a cache: it is the only thing that allows resuming a task if the
+ * process dies halfway. The escrow stores `keccak256(brief)`, not the brief,
+ * so if you do not save it here, a restart loses it forever and the task stays
+ * open with the client's money inside until the deadline expires.
  */
 const briefPath = (taskId: bigint) => join(DATA_DIR, `brief-${taskId}.txt`);
 function saveBrief(taskId: bigint, text: string): void {
   try {
     writeFileSync(briefPath(taskId), text, 'utf8');
   } catch (err) {
-    // No se aborta: perder la copia solo cuesta no poder retomar. Trabajar
-    // ahora mismo sigue siendo posible, y es lo que el cliente está esperando.
-    console.error(`[panal] #${taskId} no se pudo guardar el encargo: ${err instanceof Error ? err.message : err}`);
+    // Not aborted: losing the copy only costs being unable to resume. Working
+    // right now is still possible, and it is what the client is waiting for.
+    console.error(`[panal] #${taskId} could not save the brief: ${err instanceof Error ? err.message : err}`);
   }
 }
 function loadBrief(taskId: bigint): string | null {
@@ -466,12 +474,12 @@ function loadBrief(taskId: bigint): string | null {
 }
 
 /**
- * Guarda en disco los archivos de una entrega y devuelve su manifiesto.
+ * Saves a delivery's files to disk and returns their manifest.
  *
- * El nombre se limpia con `sanitizeFileName` ANTES de tocar el disco: llega en
- * lo que devuelve `handleTask`, y un agente que construya el nombre a partir
- * del encargo del cliente estaría dejando que un desconocido elija dónde
- * escribir. Un `../../.env` acabaría en la raíz del proyecto.
+ * The name is cleaned with `sanitizeFileName` BEFORE touching the disk: it
+ * comes in what `handleTask` returns, and an agent that builds the name from
+ * the client's brief would be letting a stranger choose where to write. A
+ * `../../.env` would end up at the project root.
  */
 function saveFiles(taskId: bigint, files: TaskFile[]): DeliveredFile[] {
   const dir = filesDir(taskId);
@@ -485,8 +493,8 @@ function saveFiles(taskId: bigint, files: TaskFile[]): DeliveredFile[] {
       name,
       size: bytes.byteLength,
       ...(f.mime ? { mime: f.mime } : {}),
-      // El hash de los BYTES, no del enlace: es lo único que sobrevive a que
-      // alguien cambie el archivo después de haber cobrado.
+      // The hash of the BYTES, not the link: it is the only thing that survives
+      // someone changing the file after getting paid.
       hash: keccak256(bytes),
       path: `/files/${taskId}/${encodeURIComponent(name)}`,
     };
@@ -494,11 +502,11 @@ function saveFiles(taskId: bigint, files: TaskFile[]): DeliveredFile[] {
 }
 
 /**
- * Deja lo que devolvió `handleTask` en una forma sola.
+ * Normalizes what `handleTask` returned into a single shape.
  *
- * Se acepta un string a secas porque es lo que devuelve el 95 % de los agentes
- * y obligarles a envolverlo en un objeto sería cobrarles la complejidad de una
- * función que no usan.
+ * A bare string is accepted because that is what 95% of agents return, and
+ * forcing them to wrap it in an object would charge them the complexity of a
+ * feature they do not use.
  */
 function normalizarSalida(salida: TaskResult): { text: string; files: TaskFile[] } {
   if (typeof salida === 'string') return { text: salida, files: [] };
@@ -506,28 +514,29 @@ function normalizarSalida(salida: TaskResult): { text: string; files: TaskFile[]
 }
 
 // ---------------------------------------------------------------------------
-// Adjuntos: lo que el cliente manda CON el encargo
+// Attachments: what the client sends WITH the brief
 // ---------------------------------------------------------------------------
 //
-// El brief queda cerrado al contratar —el escrow ancla su keccak256 y más
-// abajo se rechaza cualquier texto que no lo dé—, así que una foto no puede
-// viajar dentro. Lo que viaja dentro es su HASH, anunciado en un bloque
-// `[panal-attach/1]`. Los bytes suben después, por `POST /upload/:taskId`.
+// The brief is sealed when hiring —the escrow anchors its keccak256 and below
+// any text that does not hash to it is rejected—, so a photo cannot travel
+// inside it. What travels inside is its HASH, announced in a
+// `[panal-attach/1]` block. The bytes are uploaded later, via
+// `POST /upload/:taskId`.
 //
-// De ahí sale la única regla que hay que recordar aquí: SÓLO SE ESCRIBE LO QUE
-// EL ENCARGO ANUNCIÓ. Cualquier otro byte se rechaza sin llegar al disco. El
-// número de una tarea es público, y sin esa guarda tu agente sería un almacén
-// gratis para cualquiera que sepa contar.
+// Hence the only rule to remember here: ONLY WHAT THE BRIEF ANNOUNCED IS
+// WRITTEN. Any other byte is rejected before reaching the disk. A task number
+// is public, and without that guard your agent would be free storage for
+// anyone who can count.
 
 const adjuntoPath = (taskId: bigint, nombre: string) => join(inboxDir(taskId), nombre);
 
 /**
- * Repasa qué adjuntos anunciados están ya en disco y cuáles faltan.
+ * Checks which announced attachments are already on disk and which are missing.
  *
- * El hash se comprueba AL LEER y no sólo al escribir. Entre las dos cosas hay
- * un disco, a veces un reinicio y a veces un volumen que se vuelve a montar; y
- * un trabajo hecho a partir de un archivo corrupto es peor que un trabajo sin
- * hacer, porque se entrega y se ancla.
+ * The hash is checked WHEN READING and not only when writing. Between the two
+ * there is a disk, sometimes a restart and sometimes a remounted volume; and a
+ * job done from a corrupt file is worse than a job not done, because it gets
+ * delivered and anchored.
  */
 function repasarAdjuntos(
   taskId: bigint,
@@ -545,7 +554,7 @@ function repasarAdjuntos(
       continue;
     }
     if (!matchAttachment([anunciado], bytes, anunciado.name)) {
-      console.error(`[panal] #${taskId} el adjunto "${anunciado.name}" en disco no da su hash: se pide de nuevo`);
+      console.error(`[panal] #${taskId} attachment "${anunciado.name}" on disk does not match its hash: requesting it again`);
       faltan.push(anunciado);
       continue;
     }
@@ -558,46 +567,49 @@ function repasarAdjuntos(
   return { recibidos, faltan };
 }
 
-/** Escribe un adjunto ya verificado. */
+/** Writes an already verified attachment. */
 function guardarAdjunto(taskId: bigint, nombre: string, bytes: Uint8Array): void {
   mkdirSync(inboxDir(taskId), { recursive: true });
   writeFileSync(adjuntoPath(taskId, nombre), bytes);
 }
 
 /**
- * El sobre de una tarea que espera adjuntos.
+ * The envelope of a task waiting for attachments.
  *
- * Cuando el encargo viene de otro agente y trae adjuntos, entre el brief y la
- * última subida hay un rato en el que no se puede trabajar. El sobre lleva el
- * presupuesto y el camino de la cadena, y perderlo significaría reanudar sin
- * ellos. En memoria a propósito: si el proceso muere, la cadena que lo trajo
- * murió con él, y reanudar sin sobre es exactamente lo que hace el vigilante.
+ * When the brief comes from another agent and carries attachments, there is a
+ * stretch between the brief and the last upload when no work can be done. The
+ * envelope carries the budget and the call-chain path, and losing it would
+ * mean resuming without them. In memory on purpose: if the process dies, the
+ * chain that brought it died with it, and resuming without an envelope is
+ * exactly what the watchdog does.
  */
 const sobrePendiente = new Map<string, CallEnvelope>();
 
-/** Tareas que se están procesando ahora mismo: evita trabajar dos veces. */
+/** Tasks being processed right now: prevents working twice. */
 const inFlight = new Set<string>();
 
 // ---------------------------------------------------------------------------
-// Firmas: el cliente demuestra quién es sin gastar gas (EIP-191).
-// Los mensajes tienen que coincidir EXACTAMENTE con los del dashboard.
+// Signatures: the client proves who they are without spending gas (EIP-191).
+// The messages must match the dashboard's EXACTLY, so they stay in Spanish:
+// they are part of the Panal protocol.
 // ---------------------------------------------------------------------------
 
 const briefSignMessage = (taskId: bigint) => `Panal brief #${taskId}`;
-/** Formato ANTIGUO, sin caducidad. Se sigue aceptando; ver `credencialValida`. */
+/** OLD format, no expiry. Still accepted; see `credencialValida`. */
 const resultSignMessageLegacy = (taskId: bigint) => `Panal resultado #${taskId}`;
-/** Formato actual: la firma dice hasta cuándo vale. */
+/** Current format: the signature states until when it is valid. */
 const resultSignMessage = (taskId: bigint, expira: number) => `Panal resultado #${taskId} · ${expira}`;
 
 /**
- * Cuánto puede durar como mucho una firma de descarga.
+ * The longest a download signature can last.
  *
- * El cliente elige cuándo caduca la suya y este tope acota lo que se acepta:
- * sin él, firmar una válida hasta el año 2100 sería lo mismo que no caducar.
+ * The client picks when theirs expires and this cap bounds what is accepted:
+ * without it, signing one valid until the year 2100 would be the same as not
+ * expiring.
  */
 const MAX_VENTANA_S = 15 * 60;
 
-/** Rechaza el formato antiguo (sin caducidad). Pásalo a 1 cuando puedas. */
+/** Rejects the old format (no expiry). Set it to 1 when you can. */
 const AUTH_ESTRICTA = process.env.AUTH_ESTRICTA === '1';
 
 async function signedBy(message: string, signature: string, expected: Address): Promise<boolean> {
@@ -609,17 +621,16 @@ async function signedBy(message: string, signature: string, expected: Address): 
 }
 
 /**
- * Las credenciales de una descarga: de dónde se leen y si valen.
+ * A download's credentials: where they are read from and whether they are valid.
  *
- * SE LEEN DE LAS CABECERAS, no de la query. La firma abre el resultado y TODOS
- * los archivos de una tarea, así que es un pase de acceso — y en la query
- * acababa escrita en el log de accesos del proxy, en el historial del navegador
- * y en cualquier intermediario del camino. Se encontraron 23 en un log de
- * producción, en claro. Un pase que se registra en un archivo de texto no es
- * un pase.
+ * THEY ARE READ FROM THE HEADERS, not the query. The signature unlocks the
+ * result and ALL of a task's files, so it is an access pass — and in the query
+ * it ended up written in the proxy's access log, in the browser history and in
+ * any intermediary along the way. 23 were found in plain text in a production
+ * log. A pass that gets logged to a text file is not a pass.
  *
- * La query se sigue leyendo porque los clientes publicados antes de esto la
- * usan, y romperles la descarga no arregla nada. Pero avisa.
+ * The query is still read because clients published before this use it, and
+ * breaking their downloads fixes nothing. But it warns.
  */
 function credencialesDe(
   req: IncomingMessage,
@@ -643,23 +654,23 @@ function credencialesDe(
 }
 
 /**
- * ¿La firma abre esta tarea?
+ * Does the signature unlock this task?
  *
- * La caducidad la MANDA el cliente y va dentro de lo firmado, así que no se
- * puede estirar: cambiar el número invalida la firma. Mandarla en claro no
- * regala nada y ahorra lo que sí sería un problema — adivinarla probando
- * segundo a segundo son cientos de verificaciones de firma por petición, o
- * sea un ataque de denegación montado por uno mismo.
+ * The expiry is SENT by the client and is part of what is signed, so it cannot
+ * be stretched: changing the number invalidates the signature. Sending it in
+ * the clear gives nothing away and avoids what would be a problem — guessing
+ * it by trying second by second means hundreds of signature verifications per
+ * request, i.e. a self-inflicted denial of service.
  */
-/** Un aviso por tarea: repetirlo en cada archivo llenaría el log de ruido. */
+/** One warning per task: repeating it for every file would flood the log. */
 const avisadasPorQuery = new Set<string>();
 function avisaQuery(taskId: bigint): void {
   const k = taskId.toString();
   if (avisadasPorQuery.has(k)) return;
   avisadasPorQuery.add(k);
   console.error(
-    `[panal] #${taskId} credenciales por QUERY STRING. Acaban en el log de accesos del proxy ` +
-      'y en el historial del navegador. Actualiza el cliente: van en cabeceras.',
+    `[panal] #${taskId} credentials via QUERY STRING. They end up in the proxy access log ` +
+      'and in the browser history. Update the client: they belong in headers.',
   );
 }
 
@@ -674,19 +685,19 @@ async function credencialValida(
   if (expiraCrudo !== null) {
     const expira = Number(expiraCrudo);
     if (!Number.isInteger(expira)) return false;
-    // Ni caducada, ni válida durante un año: el tope es lo que impide que una
-    // firma filtrada valga para siempre, que es el motivo de todo esto.
+    // Neither expired nor valid for a year: the cap is what stops a leaked
+    // signature from being valid forever, which is the point of all this.
     if (expira <= ahora || expira > ahora + MAX_VENTANA_S) return false;
     return signedBy(resultSignMessage(taskId, expira), signature, cliente);
   }
 
-  // Sin caducidad: formato antiguo. Se acepta para no romper a los clientes ya
-  // publicados, y se avisa en cada uso.
+  // No expiry: old format. Accepted so as not to break already published
+  // clients, with a warning on every use.
   if (AUTH_ESTRICTA) return false;
   if (await signedBy(resultSignMessageLegacy(taskId), signature, cliente)) {
     console.error(
-      `[panal] #${taskId} descarga con firma SIN CADUCIDAD (formato antiguo). ` +
-        'Actualiza el cliente; con AUTH_ESTRICTA=1 esto se rechaza.',
+      `[panal] #${taskId} download with a NON-EXPIRING signature (old format). ` +
+        'Update the client; with AUTH_ESTRICTA=1 this is rejected.',
     );
     return true;
   }
@@ -694,29 +705,30 @@ async function credencialValida(
 }
 
 // ---------------------------------------------------------------------------
-// El trabajo
+// The work
 // ---------------------------------------------------------------------------
 
 /**
- * Monta el contexto que recibe tu `handleTask`, con la capacidad de delegar.
+ * Builds the context your `handleTask` receives, including the ability to
+ * delegate.
  *
- * `consultar` es lo que convierte a tu agente en cliente de otro: busca en el
- * mercado quién sabe hacer eso, pide precio a los candidatos —gratis, con el
- * 402—, se queda con el más barato que quepa en el presupuesto, le paga y
- * devuelve su respuesta.
+ * `consultar` is what turns your agent into another agent's client: it
+ * searches the market for who can do that, asks the candidates for a price
+ * —free, via the 402—, keeps the cheapest that fits the budget, pays it and
+ * returns its answer.
  *
- * Los tres límites se aplican antes de firmar ningún pago:
+ * The three limits apply before signing any payment:
  *
- *   - PRESUPUESTO. Nunca más de SUBCONTRATA_MAX, y si esta llamada viene de
- *     otro agente, nunca más de lo que quede en el sobre. Heredar una cadena
- *     no puede AMPLIAR lo que autorizó quien la empezó.
- *   - PROFUNDIDAD. Cada salto gasta uno. Al llegar a cero hay que resolver solo.
- *   - CICLOS. Si tu agente ya aparece en el camino, se corta: A→B→C→A daría
- *     vueltas cobrando en cada una.
+ *   - BUDGET. Never more than SUBCONTRATA_MAX, and if this call comes from
+ *     another agent, never more than what is left in the envelope. Inheriting a
+ *     chain cannot WIDEN what whoever started it authorized.
+ *   - DEPTH. Each hop uses one. At zero it has to solve it alone.
+ *   - CYCLES. If your agent already appears on the path, it stops: A→B→C→A
+ *     would go round charging on every lap.
  *
- * Si algo de eso falta, `consultar` lanza. No lo captures en silencio: que tu
- * agente entregue algo peor porque no pudo delegar es información que el autor
- * necesita ver en los logs.
+ * If any of that is missing, `consultar` throws. Do not swallow it silently:
+ * your agent delivering something worse because it could not delegate is
+ * information the author needs to see in the logs.
  */
 function contexto(
   base: {
@@ -729,14 +741,14 @@ function contexto(
   },
   sobre: CallEnvelope | null,
 ): TaskContext {
-  // Se resuelve aquí y no en cada llamador para que no haya dos maneras de
-  // decidirlo. En x402 es SIEMPRE null: no hay escrow, y el importe de una
-  // llamada suelta no compra un nivel de encargo.
+  // Resolved here and not in each caller so there are not two ways of deciding
+  // it. In x402 it is ALWAYS null: there is no escrow, and the amount of a
+  // one-off call does not buy a job tier.
   const nivel = base.taskId === null ? null : nivelDe(base.amount);
 
-  // El presupuesto del nivel comprado, y si el nivel no dice nada, el del
-  // .env. Así el nivel caro puede comprar ayuda y el barato no, sin que un
-  // agente sin niveles note ningún cambio.
+  // The purchased tier's budget, and if the tier says nothing, the one from
+  // .env. That way the expensive tier can buy help and the cheap one cannot,
+  // without an agent with no tiers noticing any change.
   const presupuesto = nivel?.subcontrata ?? SUBCONTRATA_MAX;
 
   return {
@@ -748,30 +760,30 @@ function contexto(
       if (presupuesto <= 0n) {
         throw new Error(
           nivel
-            ? `El nivel "${nivel.name}" no tiene presupuesto para subcontratar: ponle \`subcontrata\` en agent.ts.`
-            : 'Este agente no tiene presupuesto para subcontratar: pon SUBCONTRATA_MAX en el .env si quieres que delegue.',
+            ? `Tier "${nivel.name}" has no delegation budget: give it \`subcontrata\` in agent.ts.`
+            : 'This agent has no delegation budget: set SUBCONTRATA_MAX in .env if you want it to delegate.',
         );
       }
-      // Dinero Y permiso. Sin lista no se compra nada, aunque haya dinero: el
-      // buscador generaliza cuando no encuentra a nadie, y sin lista esa
-      // generalización no tiene dónde parar.
+      // Money AND permission. Without a list nothing is bought, even with
+      // money: the search generalizes when it finds nobody, and without a list
+      // that generalization has nowhere to stop.
       if (SUBCONTRATA_SKILLS.length === 0) {
         throw new Error(
-          'Este agente no tiene ninguna skill permitida: rellena SUBCONTRATA_SKILLS en agent.ts si quieres que delegue.',
+          'This agent has no allowed skills: fill in SUBCONTRATA_SKILLS in agent.ts if you want it to delegate.',
         );
       }
       const res = await panal.ask(skill, pregunta, {
         maxSpend: presupuesto,
         skillsPermitidas: SUBCONTRATA_SKILLS,
         depth: SUBCONTRATA_SALTOS,
-        // El sobre recibido, si lo hay. Sin él se abre una cadena nueva.
+        // The received envelope, if any. Without it a new chain is opened.
         envelope: sobre,
-        // Sin esto un agente que busca su propia skill se contrataría a sí
-        // mismo, se pagaría a sí mismo y se quedaría esperando su respuesta.
+        // Without this an agent looking for its own skill would hire itself,
+        // pay itself and sit waiting for its own answer.
         exclude: [account.address],
       });
       console.log(
-        `[panal] consulta a ${res.agent} por ${res.paid} (${skill}) · trace ${sobre?.trace ?? 'nuevo'}`,
+        `[panal] query to ${res.agent} for ${res.paid} (${skill}) · trace ${sobre?.trace ?? 'new'}`,
       );
       return res.answer;
     },
@@ -779,17 +791,17 @@ function contexto(
 }
 
 /**
- * Cómo acabó un intento de trabajar una tarea.
+ * How an attempt to work a task ended.
  *
- * Existe porque `work()` no puede lanzar —también lo llama una ruta HTTP, y
- * una tarea rota no debe tumbar la ronda del vigilante— y sin embargo el
- * vigilante NECESITA distinguir. Antes no podía: un modelo que devolvía 429
- * dos veces seguidas y una entrega perfecta se veían igual desde fuera, así
- * que la tarea se daba por resuelta y se dejaba de mirar. Pasó con la #55.
+ * It exists because `work()` cannot throw —an HTTP route calls it too, and a
+ * broken task must not take down the watchdog's round— and yet the watchdog
+ * NEEDS to tell the difference. It used to be unable to: a model returning
+ * 429 twice in a row and a perfect delivery looked the same from outside, so
+ * the task was taken as resolved and no longer watched. It happened with #55.
  *
- * `esperando` no es un fallo y tampoco es un éxito, y por eso no bastaba con
- * relanzar el error: una tarea a la que le faltan adjuntos sale de aquí sin
- * ningún error y sin haberse entregado.
+ * `esperando` (waiting) is neither a failure nor a success, which is why
+ * rethrowing the error was not enough: a task missing attachments leaves here
+ * with no error and without having been delivered.
  */
 export type ResultadoTrabajo = 'entregada' | 'esperando' | 'fallo' | 'en-curso';
 
@@ -802,28 +814,28 @@ async function work(
   if (inFlight.has(key)) return 'en-curso';
   inFlight.add(key);
   try {
-    // Lo PRIMERO, antes de trabajar: si el proceso muere a mitad, esto es lo
-    // único que permite retomarlo. Guardarlo después sería guardarlo nunca.
+    // FIRST, before working: if the process dies halfway, this is the only
+    // thing that allows resuming. Saving it afterwards would mean never.
     saveBrief(taskId, brief);
 
-    // Si el encargo anuncia adjuntos, no se empieza hasta tenerlos todos.
+    // If the brief announces attachments, nothing starts until all are here.
     //
-    // La guarda va AQUÍ y no en la ruta HTTP porque el vigilante también llama
-    // a `work` —al retomar una tarea tras un reinicio— y ahí no hay petición
-    // que mirar. Sin esto, un agente que se reinicia entre el brief y la
-    // subida se pondría a trabajar sin la foto, entregaría lo que pudiera y
-    // anclaría ese resultado a medias en la cadena.
+    // The guard goes HERE and not in the HTTP route because the watchdog also
+    // calls `work` —when resuming a task after a restart— and there is no
+    // request to look at there. Without this, an agent restarting between the
+    // brief and the upload would start working without the photo, deliver
+    // what it could and anchor that half-done result on-chain.
     const { recibidos, faltan } = repasarAdjuntos(taskId, brief);
     if (faltan.length > 0) {
       console.log(
-        `[panal] #${taskId} en espera de ${faltan.length} adjunto(s): ${faltan.map((f) => f.name).join(', ')}`,
+        `[panal] #${taskId} waiting for ${faltan.length} attachment(s): ${faltan.map((f) => f.name).join(', ')}`,
       );
-      // Salida limpia y sin entregar. El vigilante tiene que verlo tal cual:
-      // dándola por resuelta, una tarea cuyo adjunto llega tras un reinicio se
-      // quedaba esperando para siempre sin que nadie volviera a mirarla.
+      // Clean exit, not delivered. The watchdog has to see it exactly so:
+      // treating it as resolved, a task whose attachment arrives after a
+      // restart stayed waiting forever with nobody looking at it again.
       return 'esperando';
     }
-    if (recibidos.length > 0) console.log(`[panal] #${taskId} con ${recibidos.length} adjunto(s) del cliente`);
+    if (recibidos.length > 0) console.log(`[panal] #${taskId} with ${recibidos.length} attachment(s) from the client`);
 
     const task = await leerTarea(taskId);
     const salida = await handleTask(
@@ -835,29 +847,29 @@ async function work(
           amount: task.amount,
           deadline: task.deadline,
           adjuntos: recibidos,
-          // Un encargo del escrow no arrastra conversación: se paga, se
-          // entrega una vez y se aprueba. La memoria es de los chats.
+          // An escrow job carries no conversation: it is paid, delivered once
+          // and approved. Memory is for chats.
           historial: [],
         },
         sobre,
       ),
     );
 
-    // Tu handleTask puede devolver un texto a secas —lo normal— o un texto con
-    // archivos. Los archivos se escriben en disco y su hash se cuela en el
-    // texto: lo que se ancla en la cadena pasa a cubrirlos también.
+    // Your handleTask can return a bare text —the usual— or a text with
+    // files. The files are written to disk and their hash slips into the
+    // text: what gets anchored on-chain then covers them too.
     const { text: cuerpo, files } = normalizarSalida(salida);
     const text = files.length ? appendFilesManifest(cuerpo, saveFiles(taskId, files)) : cuerpo;
 
-    // Primero se guarda y luego se entrega: si el orden fuera al revés y el
-    // proceso muriera entre medias, el hash estaría anclado on-chain y el texto
-    // perdido, o sea una entrega imposible de cumplir.
+    // Save first, then deliver: if the order were reversed and the process
+    // died in between, the hash would be anchored on-chain and the text lost,
+    // i.e. a delivery impossible to fulfil.
     saveResult(taskId, text);
     const { txHash } = await panal.deliverResult(taskId, text);
-    console.log(`[panal] #${taskId} entregada · tx ${txHash}`);
+    console.log(`[panal] #${taskId} delivered · tx ${txHash}`);
     return 'entregada';
   } catch (err) {
-    console.error(`[panal] #${taskId} falló: ${err instanceof Error ? err.message : err}`);
+    console.error(`[panal] #${taskId} failed: ${err instanceof Error ? err.message : err}`);
     return 'fallo';
   } finally {
     inFlight.delete(key);
@@ -869,16 +881,16 @@ async function work(
 // ---------------------------------------------------------------------------
 
 /**
- * Página de reenvío manual (GET /reenviar?task=<id>).
+ * Manual resend page (GET /reenviar?task=<id>).
  *
- * Todo va incrustado: ni CDN ni fuentes ni librerías. Dentro del navegador de
- * una wallet, cada recurso externo es una cosa más que puede no cargar, y esta
- * página existe precisamente para cuando algo ya ha fallado.
+ * Everything is inline: no CDN, no fonts, no libraries. Inside a wallet's
+ * browser, every external resource is one more thing that may fail to load,
+ * and this page exists precisely for when something has already failed.
  */
 const PAGINA_REENVIO = `<!doctype html>
-<html lang="es"><head>
+<html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reenviar brief · Panal</title>
+<title>Resend brief · Panal</title>
 <style>
 :root{color-scheme:dark light}
 body{margin:0;padding:24px 18px;font:16px/1.5 system-ui,-apple-system,sans-serif;background:#0f0f11;color:#e8e8ea;max-width:34rem;margin-inline:auto}
@@ -894,61 +906,61 @@ button.sec{background:#26262c;color:#e8e8ea}
 #estado.mal{background:#33161a;color:#ff9d9d}
 #estado:empty{display:none}
 </style></head><body>
-<h1>Reenviar el brief</h1>
-<p class="sub">Para cuando el envío automático no llegó. Copia el texto exacto del pedido desde panal.lat (botón "Copiar brief del pedido") y pégalo aquí.</p>
-<label for="id">Número de tarea</label>
+<h1>Resend the brief</h1>
+<p class="sub">For when the automatic send did not arrive. Copy the exact order text from panal.lat (the "Copy order brief" button) and paste it here.</p>
+<label for="id">Task number</label>
 <input id="id" inputmode="numeric" placeholder="24">
-<label for="brief">Texto del pedido</label>
-<textarea id="brief" placeholder="Pega aquí el brief, tal cual"></textarea>
-<button id="conectar" class="sec">Conectar wallet</button>
-<button id="enviar">Firmar y enviar</button>
+<label for="brief">Order text</label>
+<textarea id="brief" placeholder="Paste the brief here, exactly as is"></textarea>
+<button id="conectar" class="sec">Connect wallet</button>
+<button id="enviar">Sign and send</button>
 <div id="estado"></div>
 <script>
 var q = new URLSearchParams(location.search);
 function $(s){ return document.querySelector(s); }
-// Solo dígitos, siempre. Un teclado de móvil cuela un punto sin que lo veas y
-// la petición se va a /brief/25. → 404, con el usuario mirando un número que
-// parece correcto.
+// Digits only, always. A phone keyboard slips in a dot without you seeing it
+// and the request goes to /brief/25. → 404, with the user looking at a number
+// that seems right.
 function soloDigitos(v){ return String(v || '').replace(/[^0-9]/g, ''); }
 $('#id').value = soloDigitos(q.get('task'));
 $('#id').addEventListener('input', function(){ this.value = soloDigitos(this.value); });
 var cuenta = null;
 function estado(msg, mal){ var e = $('#estado'); e.textContent = msg; e.className = mal ? 'mal' : 'bien'; }
 $('#conectar').onclick = async function(){
-  if (!window.ethereum) { estado('Aquí no hay wallet. Abre esta página desde el navegador de MetaMask, no desde Chrome.', true); return; }
+  if (!window.ethereum) { estado('No wallet here. Open this page from the MetaMask browser, not from Chrome.', true); return; }
   try {
     var r = await ethereum.request({ method: 'eth_requestAccounts' });
     cuenta = r[0];
     $('#conectar').textContent = cuenta.slice(0,6) + '…' + cuenta.slice(-4);
-    estado('Wallet conectada.');
-  } catch (e) { estado('Conexión rechazada.', true); }
+    estado('Wallet connected.');
+  } catch (e) { estado('Connection rejected.', true); }
 };
 $('#enviar').onclick = async function(){
   var id = soloDigitos($('#id').value);
   var brief = $('#brief').value;
-  if (!id || !brief.trim()) { estado('Falta el número de tarea o el texto.', true); return; }
-  if (!cuenta) { estado('Conecta la wallet primero: hay que firmar con la misma que pagó.', true); return; }
+  if (!id || !brief.trim()) { estado('The task number or the text is missing.', true); return; }
+  if (!cuenta) { estado('Connect the wallet first: you must sign with the same one that paid.', true); return; }
   try {
-    estado('Firma el mensaje en tu wallet. No cuesta gas.');
+    estado('Sign the message in your wallet. It costs no gas.');
     var firma = await ethereum.request({ method: 'personal_sign', params: ['Panal brief #' + id, cuenta] });
-    estado('Enviando…');
+    estado('Sending…');
     var res = await fetch('/brief/' + id, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ brief: brief, address: cuenta, signature: firma })
     });
     var txt = await res.text();
-    if (res.ok) estado('Aceptado. El agente ya está trabajando en tu pedido.');
-    else estado('Rechazado (' + res.status + '):\\n' + txt, true);
-  } catch (e) { estado('Falló: ' + (e && e.message ? e.message : e), true); }
+    if (res.ok) estado('Accepted. The agent is already working on your order.');
+    else estado('Rejected (' + res.status + '):\\n' + txt, true);
+  } catch (e) { estado('Failed: ' + (e && e.message ? e.message : e), true); }
 };
 </script></body></html>`;
 
 /**
- * Las rutas por las que se pide tu logo y los archivos donde se busca.
+ * The routes your logo is requested by and the files it is looked for in.
  *
- * El orden importa: si tienes un `logo.png` y un `logo.svg`, gana el SVG, que
- * es el que escribe el generador y el que escala a cualquier tamaño.
+ * Order matters: if you have both a `logo.png` and a `logo.svg`, the SVG wins,
+ * since it is the one the generator writes and it scales to any size.
  */
 const RUTA_LOGO = /^\/logo(\.(svg|png|webp|jpe?g|gif))?$/;
 
@@ -962,28 +974,28 @@ const LOGOS: [string, string][] = [
 ];
 
 /**
- * La carpeta de tu proyecto: este archivo vive en `src/`, así que se sube uno.
+ * Your project folder: this file lives in `src/`, so it goes up one level.
  *
- * Se calcula desde el módulo y no desde el directorio de trabajo porque no son
- * lo mismo cuando alguien arranca el agente sin pasar por `npm start`: un
- * `systemd` sin `WorkingDirectory=`, o un Docker con otro `WORKDIR`. Y ese caso
- * NO se cae con estruendo —la clave puede venir de una variable de entorno de
- * verdad en vez del `.env`— así que el agente trabaja igual y lo único que pasa
- * es que su logo devuelve 404 y no llega a publicarse. En silencio.
+ * Computed from the module and not the working directory because they are not
+ * the same when someone starts the agent without `npm start`: a `systemd` unit
+ * without `WorkingDirectory=`, or a Docker image with another `WORKDIR`. And
+ * that case does NOT fail loudly —the key may come from a real environment
+ * variable instead of `.env`— so the agent works anyway and the only effect is
+ * that its logo returns 404 and never gets published. Silently.
  */
 const RAIZ = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * El primer logo que exista, o null si no publicas ninguno.
+ * The first logo that exists, or null if you publish none.
  *
- * Se mira primero junto al proyecto y después en el directorio de trabajo. El
- * respaldo se queda a propósito: si alguien coloca ahí su logo —que es lo que
- * hacía falta hasta ahora— sigue funcionando igual.
+ * It looks first next to the project and then in the working directory. The
+ * fallback stays on purpose: if someone puts their logo there —which is what
+ * used to be needed— it keeps working the same.
  *
- * Se lee en cada petición y no se cachea en memoria a propósito: cambiar de
- * logo es dejar caer un archivo, y tener que reiniciar el agente —cortando los
- * encargos en curso— para cambiar una imagen sería un precio absurdo. Los
- * clientes ya lo cachean una hora por la cabecera.
+ * It is read on every request and not cached in memory on purpose: changing
+ * the logo means dropping a file, and having to restart the agent —cutting
+ * jobs in progress— to change an image would be an absurd price. Clients
+ * already cache it for an hour via the header.
  */
 function buscaLogo(): { bytes: Buffer; tipo: string } | null {
   for (const carpeta of [RAIZ, '.']) {
@@ -991,7 +1003,7 @@ function buscaLogo(): { bytes: Buffer; tipo: string } | null {
       try {
         return { bytes: readFileSync(join(carpeta, archivo)), tipo };
       } catch {
-        // No está: se prueba el siguiente formato.
+        // Not there: try the next format.
       }
     }
   }
@@ -1004,19 +1016,19 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * El cuerpo en crudo, con su propio tope.
+ * The raw body, with its own cap.
  *
- * Va aparte de `readBody` a propósito: MAX_BODY protege las rutas de texto y
- * está calculado para caberles justo —lo que hoy pida el nivel mayor y ni un
- * byte más—. Una foto no entra ahí, y subirle el tope a todas las rutas para
- * que quepa sería abrir la puerta que ese límite cierra.
+ * Kept apart from `readBody` on purpose: MAX_BODY protects the text routes and
+ * is computed to fit them exactly —what the largest tier asks for today and
+ * not a byte more—. A photo does not fit there, and raising the cap on every
+ * route to make it fit would open the door that limit closes.
  */
 async function readBodyBytes(req: IncomingMessage, max: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
     total += (chunk as Buffer).length;
-    if (total > max) throw new Error(`cuerpo demasiado grande (tope ${max} bytes)`);
+    if (total > max) throw new Error(`body too large (cap ${max} bytes)`);
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
@@ -1027,41 +1039,41 @@ async function readBody(req: IncomingMessage): Promise<string> {
   let total = 0;
   for await (const chunk of req) {
     total += (chunk as Buffer).length;
-    if (total > MAX_BODY) throw new Error('cuerpo demasiado grande');
+    if (total > MAX_BODY) throw new Error('body too large');
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
 }
 
 // ---------------------------------------------------------------------------
-// Aguantar el ruido: límite de peticiones y caché de la tarea
+// Withstanding noise: request limit and task cache
 // ---------------------------------------------------------------------------
 //
-// Cada petición a /result, /files o /brief cuesta una llamada al RPC ANTES de
-// poder verificar nada — hay que leer la tarea para saber quién es su cliente.
-// El RPC público limita a ~15 llamadas/s, así que un bucle de curl sin
-// autenticar agotaba esa cuota y dejaba al agente sin poder entregar su trabajo
-// real, con el dinero de clientes legítimos bloqueado hasta que vencía el plazo.
+// Every request to /result, /files or /brief costs an RPC call BEFORE anything
+// can be verified — the task has to be read to know who its client is. The
+// public RPC is limited to ~15 calls/s, so an unauthenticated curl loop used
+// up that quota and left the agent unable to deliver its real work, with
+// legitimate clients' money locked until the deadline expired.
 
-/** Peticiones por minuto y por IP. 0 lo desactiva. */
+/** Requests per minute per IP. 0 disables it. */
 const LIMITE_POR_MINUTO = (() => {
   const n = Number(process.env.LIMITE_POR_MINUTO?.trim() || '60');
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 60;
 })();
 
 /**
- * Confiar en `x-forwarded-for`. Solo con un proxy delante (Caddy, nginx).
+ * Trust `x-forwarded-for`. Only with a proxy in front (Caddy, nginx).
  *
- * Apagado por defecto a propósito: si se confía sin proxy, cualquiera manda esa
- * cabecera con una IP inventada por petición y el límite deja de existir.
+ * Off by default on purpose: trusting it without a proxy lets anyone send that
+ * header with a made-up IP per request, and the limit stops existing.
  */
 const TRAS_PROXY = process.env.TRAS_PROXY === '1';
 
 const cubos = new Map<string, { n: number; hasta: number }>();
 
 /**
- * Se avisa una vez, no en cada petición: esto es una configuración que hay que
- * corregir, no un evento que haya que contar.
+ * Warned once, not on every request: this is a setting to fix, not an event
+ * to count.
  */
 let avisadoDelProxy = false;
 
@@ -1071,34 +1083,34 @@ function ipDe(req: IncomingMessage): string {
     const primera = (Array.isArray(xff) ? xff[0] : xff)?.split(',')[0]?.trim();
     if (primera) return primera;
   } else if (xff && !avisadoDelProxy) {
-    // Llega `x-forwarded-for` y no nos fiamos de él: hay un proxy delante y
-    // este agente no lo sabe. No es un detalle — TODAS las peticiones llegan
-    // con la IP del proxy, así que el límite «por cliente» pasa a ser uno
-    // GLOBAL: el indexador, un navegador y el encargo de un cliente comparten
-    // el mismo cubo, y cuando se llena el agente responde 429 a todo el mundo.
-    // Un cliente que intenta mandar su brief se lo come, y como el pago ya
-    // esta bloqueado, se queda esperando al plazo. Paso de verdad, en mainnet.
+    // `x-forwarded-for` arrives and we do not trust it: there is a proxy in
+    // front and this agent does not know. Not a detail — ALL requests arrive
+    // with the proxy's IP, so the "per client" limit becomes a GLOBAL one: the
+    // indexer, a browser and a client's brief share the same bucket, and when
+    // it fills up the agent answers 429 to everyone. A client trying to send
+    // their brief gets hit, and since the payment is already locked, they are
+    // left waiting for the deadline. It really happened, on mainnet.
     avisadoDelProxy = true;
     console.warn(
-      '[panal] llega x-forwarded-for pero TRAS_PROXY no esta a 1: hay un proxy ' +
-        'delante y el limite por IP esta contando a TODOS los clientes en el mismo ' +
-        'cubo. Pon TRAS_PROXY=1 en el .env y reinicia. Si NO hay proxy delante, ' +
-        'dejalo apagado: fiarse de esa cabecera sin proxy deja que cualquiera se ' +
-        'invente una IP por peticion y el limite deje de existir.',
+      '[panal] x-forwarded-for is arriving but TRAS_PROXY is not 1: there is a proxy ' +
+        'in front and the per-IP limit is counting ALL clients in the same ' +
+        'bucket. Set TRAS_PROXY=1 in .env and restart. If there is NO proxy in front, ' +
+        'leave it off: trusting that header without a proxy lets anyone make up ' +
+        'an IP per request and the limit stops existing.',
     );
   }
-  return req.socket.remoteAddress ?? 'desconocida';
+  return req.socket.remoteAddress ?? 'unknown';
 }
 
-/** true si hay que rechazar. Ventana fija de un minuto, que sobra aquí. */
+/** true if it must be rejected. A fixed one-minute window, plenty here. */
 function pasaDelLimite(req: IncomingMessage): boolean {
   if (LIMITE_POR_MINUTO === 0) return false;
   const ahora = Date.now();
   const ip = ipDe(req);
   const cubo = cubos.get(ip);
   if (!cubo || cubo.hasta <= ahora) {
-    // Se limpia aquí y no con un temporizador: sin esto el mapa crece sin fin
-    // con una IP distinta por petición, que es su propia forma de tumbarlo.
+    // Cleaned here and not with a timer: without this the map grows without
+    // end with a different IP per request, which is its own way of crashing.
     if (cubos.size > 10_000) for (const [k, v] of cubos) if (v.hasta <= ahora) cubos.delete(k);
     cubos.set(ip, { n: 1, hasta: ahora + 60_000 });
     return false;
@@ -1108,39 +1120,39 @@ function pasaDelLimite(req: IncomingMessage): boolean {
 }
 
 /**
- * La tarea, cacheada unos segundos.
+ * The task, cached for a few seconds.
  *
- * Solo para las rutas de LECTURA (/result, /files), y solo se usa su `client`,
- * que no cambia nunca. El camino del encargo NO la usa: ahí se mira el estado y
- * el hash, y servir un estado de hace cinco segundos podría aceptar un encargo
- * de una tarea que acaba de cerrarse.
+ * Only for READ routes (/result, /files), and only its `client` is used, which
+ * never changes. The brief path does NOT use it: there the status and hash are
+ * checked, and serving a five-second-old status could accept a brief for a
+ * task that just closed.
  *
- * Además de aguantar el ruido, ahorra lo obvio: bajarse cuatro archivos de una
- * entrega hacía cuatro lecturas idénticas de la misma tarea.
+ * Besides withstanding noise, it saves the obvious: downloading four files of
+ * a delivery used to make four identical reads of the same task.
  */
 const CACHE_TAREA_MS = 5_000;
 const tareasCache = new Map<string, { cliente: Address; hasta: number }>();
 
 /**
- * La tarea existe en la cadena, pero el nodo que consultamos aún no la ve.
+ * The task exists on-chain, but the node we query does not see it yet.
  *
- * NO es un error del agente ni del cliente, y por eso tiene su propio tipo:
- * quien llama necesita poder distinguir «todavía no» de «se rompió algo», que
- * son dos cosas con reacciones opuestas —una se reintenta, la otra no.
+ * It is NOT the agent's or the client's fault, which is why it has its own
+ * type: the caller needs to tell "not yet" from "something broke", two things
+ * with opposite reactions —one is retried, the other is not.
  */
 class TareaAunNoVisible extends Error {
   constructor(readonly taskId: bigint) {
-    super(`la tarea #${taskId} todavía no es visible en este nodo RPC`);
+    super(`task #${taskId} is not visible on this RPC node yet`);
     this.name = 'TareaAunNoVisible';
   }
 }
 
 /**
- * ¿Este fallo es «esa tarea no existe (todavía)»?
+ * Is this failure "that task does not exist (yet)"?
  *
- * `tasks` es un array público, así que su getter solo puede revertir por
- * índice fuera de rango. Cualquier otro fallo —RPC caído, timeout, red— tiene
- * otra forma y NO se disfraza de esto: tragárselo escondería una avería real.
+ * `tasks` is a public array, so its getter can only revert on an out-of-range
+ * index. Any other failure —RPC down, timeout, network— looks different and is
+ * NOT disguised as this: swallowing it would hide a real fault.
  */
 function pareceInexistente(err: unknown): boolean {
   const m = err instanceof Error ? `${err.message}` : String(err);
@@ -1148,18 +1160,18 @@ function pareceInexistente(err: unknown): boolean {
 }
 
 /**
- * Lee la tarea aguantando el desfase entre nodos.
+ * Reads the task, tolerating lag between nodes.
  *
- * POR QUÉ EXISTE. El cliente mina `createTask` contra SU RPC y, en cuanto
- * tiene el recibo, nos manda el encargo. Nosotros validamos leyendo la tarea
- * contra el NUESTRO, que es otro nodo y puede ir un bloque por detrás: para él
- * esa tarea aún no existe, el getter revierte y el envío se caía con un 500.
- * El cliente veía «no se pudo enviar el brief» y tenía que reintentar a mano,
- * con su dinero ya bloqueado. Fallaba a la primera y funcionaba a la segunda,
- * que es la firma de una carrera, no de una avería.
+ * WHY IT EXISTS. The client mines `createTask` against THEIR RPC and, as soon
+ * as they have the receipt, sends us the brief. We validate by reading the task
+ * against OURS, which is another node and may be one block behind: for it the
+ * task does not exist yet, the getter reverts and the send failed with a 500.
+ * The client saw "could not send the brief" and had to retry by hand, with
+ * their money already locked. It failed the first time and worked the second,
+ * which is the signature of a race, not a fault.
  *
- * Cuatro intentos con espera creciente cubren de sobra un bloque de Monad
- * (~800 ms) sin castigar al RPC compartido.
+ * Four attempts with growing waits comfortably cover a Monad block (~800 ms)
+ * without punishing the shared RPC.
  */
 async function leerTarea(taskId: bigint): ReturnType<typeof panal.getTask> {
   for (let intento = 1; intento <= 4; intento++) {
@@ -1195,20 +1207,20 @@ const server = createServer((req, res) => {
       return;
     }
 
-    // El dashboard vive en otro dominio: sin CORS el cliente no puede ni
-    // mandarte el brief ni descargar su resultado.
+    // The dashboard lives on another domain: without CORS the client can
+    // neither send you the brief nor download their result.
     res.setHeader('access-control-allow-origin', 'https://panal.lat');
     res.setHeader('vary', 'origin');
     if (req.method === 'OPTIONS') {
       res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-      // Las credenciales van en cabeceras propias, y esas NO son simples: sin
-      // declararlas aquí el navegador bloquea la descarga en el preflight.
+      // Credentials go in custom headers, and those are NOT simple: without
+      // declaring them here the browser blocks the download at preflight.
       //
-      // Cada cabecera nueva hay que añadirla A ESTA LISTA. Se olvidó con
-      // `x-panal-filename` al añadir los adjuntos, y el efecto es de los que
-      // no se ven leyendo el código: el servidor está bien, la ruta está bien,
-      // y el navegador se niega a hacer la petición sin dejar rastro en el log
-      // del agente.
+      // Every new header has to be added TO THIS LIST. It was forgotten with
+      // `x-panal-filename` when attachments were added, and the effect is one
+      // you cannot see reading the code: the server is fine, the route is
+      // fine, and the browser refuses to make the request without leaving a
+      // trace in the agent's log.
       res.setHeader(
         'access-control-allow-headers',
         'content-type, x-panal-address, x-panal-signature, x-panal-expira, x-panal-filename, x-payment, x-payment-payer',
@@ -1218,31 +1230,31 @@ const server = createServer((req, res) => {
       return;
     }
 
-    // ---- Tu logo, si lo pones ------------------------------------------------
+    // ---- Your logo, if you set one ---------------------------------------------
     //
-    // Un archivo `logo.svg` —o `logo.png`, o `logo.webp`— junto al package.json
-    // y ya. El generador te deja uno escrito con la inicial de tu agente, para
-    // que no salgas sin cara desde el primer minuto: sobrescríbelo con el tuyo
-    // y no hay nada más que tocar.
+    // A `logo.svg` file —or `logo.png`, or `logo.webp`— next to package.json
+    // and that is it. The generator leaves one with your agent's initial, so
+    // you do not appear faceless from minute one: overwrite it with yours and
+    // there is nothing else to touch.
     //
-    // El registro guarda la URL, así que la imagen tiene que vivir en algún
-    // sitio; y el sitio natural es el mismo dominio que ya sirves, porque es el
-    // que la cadena ya dice que es tuyo.
+    // The registry stores the URL, so the image has to live somewhere; and the
+    // natural place is the same domain you already serve, because it is the
+    // one the chain already says is yours.
     //
-    // RESPONDE A `/logo` Y A CUALQUIER EXTENSIÓN, y sirve el archivo que de
-    // verdad tengas, sea cual sea la que te pidan. Suena descuidado y no lo es:
-    // los agentes que ya están registrados publicaron `…/logo.svg` y esa URL
-    // está escrita en la cadena, así que cambiar de formato no puede obligarles
-    // a pagar otra transacción. Lo que decide cómo se pinta una imagen es el
-    // `content-type`, no la extensión de la URL.
+    // IT ANSWERS `/logo` AND ANY EXTENSION, and serves whichever file you
+    // really have, whatever extension is asked for. It sounds sloppy and is
+    // not: already registered agents published `…/logo.svg` and that URL is
+    // written on-chain, so changing format cannot force them to pay for
+    // another transaction. What decides how an image is drawn is the
+    // `content-type`, not the URL's extension.
     //
-    // Se sirve con CORS abierto a propósito: es una imagen pública que va a
-    // pintarse en escaparates ajenos, y sin la cabecera un `<canvas>` que la
-    // toque para hacer una miniatura se queda a oscuras.
+    // Served with open CORS on purpose: it is a public image that will be
+    // drawn on other people's storefronts, and without the header a `<canvas>`
+    // that touches it to make a thumbnail stays dark.
     if (RUTA_LOGO.test(url.pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
       const logo = buscaLogo();
       if (!logo) {
-        json(res, 404, { error: 'este agente no publica logo' });
+        json(res, 404, { error: 'this agent publishes no logo' });
         return;
       }
       res.writeHead(200, {
@@ -1256,35 +1268,35 @@ const server = createServer((req, res) => {
       return;
     }
 
-    // Tarjeta de presentación: quién eres y qué sabes hacer.
+    // Business card: who you are and what you can do.
     //
-    // Si cobras por llamada hay que ANUNCIARLO aquí. Durante meses el bot de
-    // LexPanal tuvo x402 funcionando y nadie lo usó, sencillamente porque no
-    // salía en su tarjeta: un cobro que nadie puede descubrir no existe.
+    // If you charge per call it has to be ANNOUNCED here. For months the
+    // LexPanal bot had x402 working and nobody used it, simply because it did
+    // not show on its card: a payment nobody can discover does not exist.
     if (url.pathname === '/agent.json' && req.method === 'GET') {
       const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '') || null;
       /**
-       * `?lang=fr`: la misma ficha con las frases en francés.
+       * `?lang=fr`: the same profile with the phrases in French.
        *
-       * SIN ESPERAR. Si el idioma ya está traducido se sirve traducido; si no,
-       * se sirve el original y la traducción se encarga por detrás para la
-       * próxima vez. Traducir aquí dentro obliga a no reintentar —nadie espera
-       * a un modelo con la tarjeta en blanco— y sin reintentos un 429 pasajero
-       * dejaba ese idioma sin traducir para siempre.
+       * WITHOUT WAITING. If the language is already translated it is served
+       * translated; if not, the original is served and the translation is
+       * ordered in the background for next time. Translating in here rules out
+       * retries —nobody waits for a model with a blank card— and without
+       * retries a passing 429 left that language untranslated forever.
        */
       const idioma = normalizarIdioma(url.searchParams.get('lang'));
       const nivelesFicha = NIVELES_OK.map(comoFicha);
       let descripcion = FICHA_TEXTO.description;
       /**
-       * En qué idioma va lo que se sirve, y `null` si va en el original.
+       * Which language is being served, and `null` if it is the original.
        *
-       * Hay que DECIRLO, no dejarlo adivinar. Como la traducción va por detrás,
-       * pedir `?lang=fr` antes de que esté lista devuelve la ficha original con
-       * un 200 impecable: quien la guarde —el indexador lo hace— se queda con
-       * el texto en inglés creyendo que es el francés, y como le llegaron los
-       * diez idiomas da el trabajo por hecho y no vuelve nunca. Pasó en
-       * mainnet: nueve de cada diez «traducciones» del catálogo eran el
-       * original.
+       * It has to be SAID, not left to guess. Since the translation runs in the
+       * background, asking for `?lang=fr` before it is ready returns the
+       * original profile with a spotless 200: whoever stores it —the indexer
+       * does— keeps the English text believing it is the French, and since it
+       * got all ten languages it considers the job done and never comes back.
+       * It happened on mainnet: nine out of ten catalogue "translations" were
+       * the original.
        */
       let servidoEn: string | null = null;
       if (idioma) {
@@ -1299,8 +1311,9 @@ const server = createServer((req, res) => {
           descripcion = traducido.description;
           traducido.tiers.forEach((t, i) => {
             const destino = nivelesFicha[i];
-            // Solo se pisa lo que ya había: un nivel sin nombre no gana uno
-            // por pasar por el traductor, y uno con nombre no lo pierde.
+            // Only what was already there gets overwritten: a tier without a
+            // name does not gain one by going through the translator, and one
+            // with a name does not lose it.
             if (!destino) return;
             if (destino.name && t.name) destino.name = t.name;
             if (destino.description && t.description) destino.description = t.description;
@@ -1327,57 +1340,57 @@ const server = createServer((req, res) => {
         protocol: 'panal',
         network: 'monad-mainnet',
         chainId: monad.id,
-        // El nombre NO se traduce nunca: «LexPanal» no significa nada en
-        // francés y traducirlo sería inventarle otro nombre a este agente.
+        // The name is NEVER translated: "LexPanal" means nothing in French and
+        // translating it would invent another name for this agent.
         ...(FICHA_TEXTO.name ? { name: FICHA_TEXTO.name } : {}),
         ...(descripcion ? { description: descripcion } : {}),
-        // Solo cuando se ha traducido de verdad. Ausente = esto va en el
-        // idioma en que su dueño lo escribió, aunque lo hayas pedido en otro.
+        // Only when it really was translated. Absent = this is in the language
+        // its owner wrote it in, even if you asked for another.
         ...(servidoEn ? { lang: servidoEn } : {}),
         endpoints: {
           base,
           postBrief: {
             method: 'POST',
             path: '/brief/:taskId',
-            signMessage: 'Panal brief #<taskId>  (EIP-191, firmado por el cliente de la tarea)',
-            body: `{"brief": string (máx. ${MAX_BRIEF_CHARS} chars), "address": "0x…", "signature": "0x…"}`,
-            // OJO: aquí va el tope BÁSICO, nunca el del nivel mayor.
+            signMessage: 'Panal brief #<taskId>  (EIP-191, signed by the task client)',
+            body: `{"brief": string (max ${MAX_BRIEF_CHARS} chars), "address": "0x…", "signature": "0x…"}`,
+            // CAREFUL: this is the BASIC cap, never the largest tier's.
             //
-            // Un cliente antiguo no sabe elegir nivel, así que va a bloquear el
-            // precio del registro y comprar el básico. Anunciarle el tope del
-            // nivel grande le haría mandar un libro pagando lo pequeño, y
-            // enterarse con el dinero ya bloqueado. Quien sepa leer `tiers`
-            // verá los demás.
+            // An old client cannot pick a tier, so it will lock the registry
+            // price and buy the basic one. Announcing the big tier's cap would
+            // make it send a book while paying for the small job, and find out
+            // with the money already locked. Whoever can read `tiers` will see
+            // the rest.
             maxBriefChars: MAX_BRIEF_CHARS,
           },
           postAttachment: {
             method: 'POST',
             path: '/upload/:taskId',
-            signMessage: 'Panal brief #<taskId>  (la MISMA firma que el encargo, no hace falta otra)',
-            body: 'los bytes en crudo; el nombre en la cabecera X-Panal-Filename',
+            signMessage: 'Panal brief #<taskId>  (the SAME signature as the brief, no other needed)',
+            body: 'the raw bytes; the name in the X-Panal-Filename header',
             howTo:
-              'anuncia cada adjunto en el brief con un bloque [panal-attach/1] ANTES de contratar, y sube los bytes aquí después. Sólo se aceptan los que el encargo anuncie.',
+              'announce each attachment in the brief with a [panal-attach/1] block BEFORE hiring, and upload the bytes here afterwards. Only those the brief announced are accepted.',
             maxAttachmentBytes: MAX_FILE_BYTES,
           },
           getResult: {
             method: 'GET',
             path: '/result/:taskId',
-            signMessage: 'Panal resultado #<taskId> · <epoch>  (EIP-191, cabeceras X-Panal-*)',
+            signMessage: 'Panal resultado #<taskId> · <epoch>  (EIP-191, X-Panal-* headers)',
           },
           ...(x402 ? { x402Ask: x402 } : {}),
         },
-        // Los niveles, sólo si este agente vende alguno. Ausente significa que
-        // no los ofrece, y quien lee NO debe inventárselos a partir del precio.
+        // The tiers, only if this agent sells any. Absent means it offers none,
+        // and the reader must NOT make them up from the price.
         ...(nivelesFicha.length > 0 ? { tiers: nivelesFicha } : {}),
-        // ALIAS ANTIGUO, en la raíz. Aquí es donde esta plantilla lo publicaba
-        // antes, y hay clientes ahí fuera que solo miran este sitio. Se sirve
-        // por compatibilidad y desaparecerá; lo que se lee es `endpoints`.
+        // OLD ALIAS, at the root. This is where the template used to publish
+        // it, and there are clients out there that only look here. Served for
+        // compatibility and will go away; what should be read is `endpoints`.
         ...(x402 ? { x402Ask: x402 } : {}),
       });
       return;
     }
 
-    // ---- Cobro por llamada: pagas y te respondo en el acto ------------------
+    // ---- Pay per call: you pay and I answer on the spot ------------------------
     if (url.pathname === '/x402/ask' && req.method === 'POST') {
       if (X402_PRICE === null) {
         json(res, 404, { error: 'this agent does not charge per call; hire it through the escrow' });
@@ -1390,16 +1403,17 @@ const server = createServer((req, res) => {
         return;
       }
 
-      // El sobre, antes que nada. Cortar el ciclo aquí importa más que en el
-      // escrow: en x402 el cobro va ANTES de trabajar, así que una vuelta de
-      // más no es tiempo perdido, es dinero cobrado por dar vueltas. Y va
-      // antes del 402 a propósito: si la cadena está viciada, ni se cotiza.
+      // The envelope, before anything else. Cutting a cycle here matters more
+      // than in the escrow: in x402 payment comes BEFORE work, so an extra lap
+      // is not wasted time, it is money charged for going round in circles.
+      // And it comes before the 402 on purpose: if the chain is tainted, no
+      // quote is even given.
       const sobre = parseEnvelope(req.headers);
       try {
         assertCanServe(sobre, account.address);
       } catch (err) {
         if (err instanceof LoopDetected) {
-          console.error(`[x402] ciclo cortado: ${err.message}`);
+          console.error(`[x402] cycle cut: ${err.message}`);
           json(res, 508, { error: err.message, trace: err.trace });
           return;
         }
@@ -1409,12 +1423,12 @@ const server = createServer((req, res) => {
       const domain = await dominioPermit();
       const pagoCrudo = req.headers['x-payment'];
 
-      // Sin pago: se responde 402 con el presupuesto. Este es el paso que le da
-      // por fin sentido a un código de estado que llevaba desde los noventa
-      // reservado y sin usar, porque no había forma de pagar en la web.
+      // No payment: answer 402 with the quote. This is the step that finally
+      // gives meaning to a status code reserved and unused since the nineties,
+      // because there was no way to pay on the web.
       if (typeof pagoCrudo !== 'string' || !pagoCrudo.trim()) {
-        // Si el cliente dice quién es, se le regala su nonce y se ahorra una
-        // consulta a la cadena antes de poder firmar.
+        // If the client says who they are, they get their nonce for free and
+        // save a chain query before being able to sign.
         const quien = req.headers['x-payment-payer'];
         const payer = typeof quien === 'string' && isAddress(quien) ? (quien as Address) : null;
         const nonce = payer ? await permitNonce(panal.publicClient, X402_TOKEN, payer).catch(() => undefined) : undefined;
@@ -1443,8 +1457,8 @@ const server = createServer((req, res) => {
         return;
       }
 
-      // SE COBRA ANTES DE SERVIR. Si se sirviera primero y el cobro fallara, el
-      // trabajo estaría regalado y no habría forma de recuperarlo.
+      // PAYMENT IS TAKEN BEFORE SERVING. If it served first and the payment
+      // failed, the work would be given away with no way to recover it.
       const cobro = await verifyAndSettle(
         { publicClient: panal.publicClient, walletClient: panal.walletClient ?? null, token: X402_TOKEN, domain, payee: account.address },
         leido.payment,
@@ -1454,10 +1468,10 @@ const server = createServer((req, res) => {
         json(res, cobro.status, { error: cobro.error });
         return;
       }
-      console.log(`[x402] cobrado ${cobro.amount} de ${leido.payment.payer} · tx ${cobro.txHash}`);
+      console.log(`[x402] charged ${cobro.amount} from ${leido.payment.payer} · tx ${cobro.txHash}`);
 
-      // Ya está cobrado: pase lo que pase a partir de aquí, hay que responder
-      // algo. Si el modelo revienta, se dice; callarse sería quedarse el dinero.
+      // It is paid: whatever happens from here, something must be answered. If
+      // the model blows up, say so; staying silent would be keeping the money.
       try {
         const salida = await handleTask(
           prompt,
@@ -1467,39 +1481,40 @@ const server = createServer((req, res) => {
               client: leido.payment.payer,
               amount: cobro.amount,
               deadline: 0n,
-              // Una llamada x402 es una pregunta y una respuesta: no hay tarea
-              // donde anclar un adjunto, así que tampoco hay adjuntos.
+              // An x402 call is one question and one answer: there is no task
+              // to anchor an attachment to, so there are no attachments.
               adjuntos: [],
-              // Lo que ya se habló con ESTA persona. Quién es lo dice el pago:
-              // firmó un permiso y el cobro se ejecutó en la cadena, así que
-              // nadie puede continuar la conversación de otro sin pagar como
-              // él. Por eso no hace falta autenticar nada aquí.
+              // What was already discussed with THIS person. The payment says
+              // who they are: they signed a permit and the charge executed
+              // on-chain, so nobody can continue someone else's conversation
+              // without paying as them. That is why nothing needs
+              // authenticating here.
               historial: historialParaElModelo(DATA_DIR, leido.payment.payer),
             },
             sobre,
           ),
         );
-        // En una llamada x402 no hay tarea, así que no hay nada que anclar ni
-        // ninguna firma con la que proteger una descarga: los archivos no
-        // tienen dónde agarrarse. Se responde el texto y se avisa en el log en
-        // vez de callarlo, que si no el autor busca el fallo donde no está.
+        // An x402 call has no task, so there is nothing to anchor and no
+        // signature to protect a download with: files have nothing to hold on
+        // to. The text is returned and the log says so instead of staying
+        // quiet, otherwise the author looks for the fault in the wrong place.
         const { text: answer, files } = normalizarSalida(salida);
         if (files.length) {
           console.error(
-            `[x402] tu handleTask devolvió ${files.length} archivo(s) y una llamada x402 no puede entregarlos: ` +
-              'no hay tarea que los ancle ni firma que proteja la descarga. Solo va el texto.',
+            `[x402] your handleTask returned ${files.length} file(s) and an x402 call cannot deliver them: ` +
+              'there is no task to anchor them nor a signature to protect the download. Only the text goes.',
           );
         }
         res.setHeader('x-payment-tx', cobro.txHash);
         json(res, 200, { answer, paid: { txHash: cobro.txHash, amount: cobro.amount.toString(), asset: X402_TOKEN } });
 
-        // El turno se guarda AQUÍ, con las dos mitades y sólo si hubo
-        // respuesta. Guardarlo antes de trabajar dejaría preguntas sin
-        // contestar en la memoria, y la siguiente vez el modelo leería una
-        // conversación en la que él se quedó callado.
+        // The turn is saved HERE, with both halves and only if there was an
+        // answer. Saving it before working would leave unanswered questions in
+        // memory, and next time the model would read a conversation in which
+        // it stayed silent.
         recordarTurno(DATA_DIR, leido.payment.payer, { pregunta: prompt, respuesta: answer, cuando: Date.now() });
       } catch (err) {
-        console.error(`[x402] cobrado pero falló al responder: ${err instanceof Error ? err.message : err}`);
+        console.error(`[x402] charged but failed to answer: ${err instanceof Error ? err.message : err}`);
         json(res, 502, {
           error: 'the payment went through but the agent could not answer',
           paid: { txHash: cobro.txHash, amount: cobro.amount.toString() },
@@ -1508,21 +1523,21 @@ const server = createServer((req, res) => {
       return;
     }
 
-    // Reenvío manual del brief, para cuando el envío automático del dashboard
-    // no llega: móvil, wallet que se traga la firma, pestaña cerrada a medias.
-    // Se sirve desde el propio agente a propósito: mismo origen, sin CORS de
-    // por medio, y funciona dentro del navegador de una wallet.
+    // Manual brief resend, for when the dashboard's automatic send does not
+    // arrive: a phone, a wallet that swallows the signature, a tab closed
+    // halfway. Served from the agent itself on purpose: same origin, no CORS
+    // in between, and it works inside a wallet's browser.
     if (url.pathname === '/reenviar' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(PAGINA_REENVIO);
       return;
     }
 
-    // ---- El cliente te manda el encargo -------------------------------------
-    // La ruta canónica es POST /brief/<taskId>: es la que llama el dashboard de
-    // panal.lat y la que documenta el bot de referencia. Se admite también
-    // POST /brief con el taskId dentro del cuerpo, porque hay clientes que ya
-    // hablaban así y romperlos no arregla nada.
+    // ---- The client sends you the brief ----------------------------------------
+    // The canonical route is POST /brief/<taskId>: it is what the panal.lat
+    // dashboard calls and what the reference bot documents. POST /brief with
+    // the taskId inside the body is also accepted, because some clients
+    // already spoke that way and breaking them fixes nothing.
     const rutaBrief = /^\/brief(?:\/(\d+))?$/.exec(url.pathname);
     if (rutaBrief && req.method === 'POST') {
       const body = JSON.parse(await readBody(req)) as {
@@ -1533,16 +1548,16 @@ const server = createServer((req, res) => {
       };
       const idCrudo = rutaBrief[1] ?? body.taskId;
       if (idCrudo === undefined || !body.brief || !body.signature) {
-        json(res, 400, { error: 'faltan taskId, brief o signature' });
+        json(res, 400, { error: 'taskId, brief or signature missing' });
         return;
       }
-      // Primera guarda, y a propósito contra el tope MAYOR: aquí todavía no
-      // se sabe qué nivel se pagó —eso está en la cadena y cuesta un eth_call—
-      // y un texto que no cabe en el nivel más caro no cabe en ninguno. Lo que
-      // sí se puede decidir sin preguntarle a nadie, se decide sin preguntar.
+      // First guard, deliberately against the LARGEST cap: the paid tier is not
+      // known yet —it is on-chain and costs an eth_call— and a text that does
+      // not fit the most expensive tier fits none. Whatever can be decided
+      // without asking anyone is decided without asking.
       if (body.brief.length > TOPE_BRIEF_MAYOR) {
         json(res, 400, {
-          error: `el encargo son ${body.brief.length} caracteres y el tope es ${TOPE_BRIEF_MAYOR}`,
+          error: `the brief is ${body.brief.length} characters and the cap is ${TOPE_BRIEF_MAYOR}`,
           maxBriefChars: TOPE_BRIEF_MAYOR,
           ...(NIVELES_OK.length > 0 ? { tiers: NIVELES_OK.map(comoFicha) } : {}),
         });
@@ -1550,60 +1565,62 @@ const server = createServer((req, res) => {
       }
       const taskId = BigInt(idCrudo);
 
-      // El sobre de la cadena, si este encargo viene de otro agente. Se mira
-      // ANTES de leer la tarea: si es un ciclo, hasta el eth_call sobra.
+      // The call-chain envelope, if this brief comes from another agent.
+      // Checked BEFORE reading the task: if it is a cycle, even the eth_call is
+      // unnecessary.
       const sobre = parseEnvelope(req.headers);
       try {
         assertCanServe(sobre, account.address);
       } catch (err) {
         if (err instanceof LoopDetected) {
-          // 508 Loop Detected. Existe para esto exactamente, y decirlo con el
-          // código correcto deja que quien llama lo distinga de un fallo suyo.
-          console.error(`[panal] ciclo cortado en #${taskId}: ${err.message}`);
+          // 508 Loop Detected. It exists for exactly this, and saying it with
+          // the right code lets the caller tell it apart from its own failure.
+          console.error(`[panal] cycle cut at #${taskId}: ${err.message}`);
           json(res, 508, { error: err.message, trace: err.trace });
           return;
         }
         throw err;
       }
 
-      // Con reintentos: el cliente acaba de minar la tarea contra otro nodo y
-      // el nuestro puede ir por detrás. Ver `leerTarea`.
+      // With retries: the client just mined the task against another node and
+      // ours may lag behind. See `leerTarea`.
       const task = await leerTarea(taskId);
 
-      // Cuatro comprobaciones, y las cuatro importan: que la tarea sea tuya,
-      // que siga abierta, que quien dice firmar sea el cliente que pagó, y que
-      // la firma lo demuestre.
+      // Four checks, and all four matter: that the task is yours, that it is
+      // still open, that whoever claims to sign is the client who paid, and
+      // that the signature proves it.
       if (task.worker.toLowerCase() !== account.address.toLowerCase()) {
-        json(res, 403, { error: 'esa tarea no es de este agente' });
+        json(res, 403, { error: 'that task does not belong to this agent' });
         return;
       }
-      // El dashboard manda además quién firma; si no cuadra con el cliente de
-      // la tarea, se corta antes de gastar una verificación de firma.
+      // The dashboard also sends who is signing; if it does not match the
+      // task's client, it stops before spending a signature verification.
       if (body.address && body.address.toLowerCase() !== task.client.toLowerCase()) {
-        json(res, 403, { error: 'esa dirección no es el cliente de la tarea' });
+        json(res, 403, { error: "that address is not the task's client" });
         return;
       }
       if (task.status !== TaskStatus.Open) {
-        json(res, 409, { error: `la tarea está ${TaskStatus[task.status]}` });
+        json(res, 409, { error: `the task is ${TaskStatus[task.status]}` });
         return;
       }
       if (!(await signedBy(briefSignMessage(taskId), body.signature, task.client))) {
-        json(res, 401, { error: 'la firma no es del cliente de esta tarea' });
+        json(res, 401, { error: "the signature is not from this task's client" });
         return;
       }
 
-      // El tope DEL NIVEL QUE PAGÓ. Se mira ahora y no arriba porque hasta
-      // aquí no se sabía el importe, y el importe es lo único que dice qué
-      // nivel compró: el brief lo escribe el cliente y podría proclamarse del
-      // más caro.
+      // The cap OF THE TIER THEY PAID FOR. Checked now and not above because
+      // the amount was not known until here, and the amount is the only thing
+      // that says which tier was bought: the client writes the brief and could
+      // claim the most expensive one.
       //
-      // Se dice el número y se dicen los niveles: el cliente ya tiene el pago
-      // bloqueado, y saber si le sobra texto o le falta nivel es la diferencia
-      // entre arreglarlo y esperar al plazo para recuperar el dinero.
+      // The number and the tiers are both stated: the client already has the
+      // payment locked, and knowing whether the text is too long or the tier
+      // too small is the difference between fixing it and waiting for the
+      // deadline to get the money back.
       const nivel = nivelDe(task.amount);
       if (NIVEL_MINIMO && task.amount < NIVEL_MINIMO.wei) {
         json(res, 400, {
-          error: `esta tarea bloqueó ${task.amount} y el nivel más barato cuesta ${NIVEL_MINIMO.wei}`,
+          error: `this task locked ${task.amount} and the cheapest tier costs ${NIVEL_MINIMO.wei}`,
           tiers: NIVELES_OK.map(comoFicha),
         });
         return;
@@ -1612,33 +1629,34 @@ const server = createServer((req, res) => {
       if (body.brief.length > topeDelNivel) {
         json(res, 400, {
           error:
-            `el encargo son ${body.brief.length} caracteres y el nivel que pagaste ` +
-            `(${nivel?.name ?? 'el básico'}) llega a ${topeDelNivel}`,
+            `the brief is ${body.brief.length} characters and the tier you paid for ` +
+            `(${nivel?.name ?? 'basic'}) allows up to ${topeDelNivel}`,
           maxBriefChars: topeDelNivel,
           ...(NIVELES_OK.length > 0 ? { tiers: NIVELES_OK.map(comoFicha) } : {}),
         });
         return;
       }
-      // Y que el texto sea EL que se encargó. Para esto existe el taskHash: sin
-      // esta comprobación, un cliente podría pagar por una cosa on-chain y
-      // pedirte otra por HTTP, y en una disputa el árbitro no tendría con qué
-      // decidir. Un carácter de más y esto salta, que es justo lo que se busca.
+      // And that the text is THE one that was ordered. That is what the
+      // taskHash is for: without this check, a client could pay for one thing
+      // on-chain and ask for another over HTTP, and in a dispute the
+      // arbitrator would have nothing to decide on. One extra character and
+      // this trips, which is exactly the point.
       if (keccak256(toBytes(body.brief)) !== task.taskHash) {
         json(res, 409, {
-          error: 'ese texto no es el que se registró en la cadena para esta tarea',
+          error: 'that text is not the one registered on-chain for this task',
           taskHash: task.taskHash,
         });
         return;
       }
 
-      // El encargo se guarda YA, antes de contestar: la subida que viene
-      // detrás lo necesita en disco para saber qué bytes puede aceptar.
+      // The brief is saved NOW, before answering: the upload that follows needs
+      // it on disk to know which bytes it may accept.
       saveBrief(taskId, body.brief);
       const { faltan } = repasarAdjuntos(taskId, body.brief);
       if (faltan.length > 0) {
-        // No es un error: es la otra mitad del encargo, que aún viene de
-        // camino. Se contesta exactamente qué se espera para que el cliente lo
-        // suba sin tener que adivinarlo.
+        // Not an error: it is the other half of the brief, still on its way.
+        // The answer says exactly what is expected so the client can upload it
+        // without guessing. (Response keys stay as the protocol defines them.)
         if (sobre) sobrePendiente.set(taskId.toString(), sobre);
         json(res, 202, {
           ok: true,
@@ -1649,69 +1667,69 @@ const server = createServer((req, res) => {
       }
 
       json(res, 202, { ok: true });
-      // Sin await: el cliente no debería esperar a que termines de trabajar.
+      // No await: the client should not wait for you to finish working.
       void work(taskId, body.brief, sobre);
       return;
     }
 
-    // ---- El cliente sube los adjuntos que su encargo anunció ----------------
+    // ---- The client uploads the attachments their brief announced --------------
     //
-    // Se firma UNA vez, con el mismo `Panal brief #<id>` que abrió el encargo.
-    // Pedir una firma por archivo sería pedirle tres popups a alguien que ya
-    // pagó, y no compraría nada: lo que decide qué entra no es la firma, es el
-    // manifiesto que la cadena ya cubre.
+    // Signed ONCE, with the same `Panal brief #<id>` that opened the brief.
+    // Asking for one signature per file would mean three popups for someone who
+    // already paid, and it would buy nothing: what decides what gets in is not
+    // the signature, it is the manifest the chain already covers.
     const subida = /^\/upload\/(\d+)$/.exec(url.pathname);
     if (subida && req.method === 'POST') {
       const taskId = BigInt(subida[1]!);
-      /** Rechaza vaciando el cuerpo: si no, el cliente ve un reset en vez del motivo. */
+      /** Rejects while draining the body: otherwise the client sees a reset instead of the reason. */
       const rechazar = (status: number, cuerpo: unknown): void => {
         req.resume();
         json(res, status, cuerpo);
       };
 
-      // Lo local primero, que no cuesta ni RPC ni ancho de banda.
+      // Local checks first, they cost neither RPC nor bandwidth.
       const brief = loadBrief(taskId);
       if (!brief) {
-        rechazar(409, { error: 'manda antes el encargo a POST /brief/' + taskId });
+        rechazar(409, { error: 'send the brief first to POST /brief/' + taskId });
         return;
       }
       const anunciados = parseAttachmentsManifest(brief);
       if (anunciados.length === 0) {
-        rechazar(409, { error: 'ese encargo no anuncia ningún adjunto' });
+        rechazar(409, { error: 'that brief announces no attachments' });
         return;
       }
 
       const cred = credencialesDe(req, url);
       if (!cred.address || !cred.signature) {
-        rechazar(400, { error: 'faltan address y signature (cabeceras x-panal-address / x-panal-signature)' });
+        rechazar(400, { error: 'address and signature missing (x-panal-address / x-panal-signature headers)' });
         return;
       }
 
       const task = await leerTarea(taskId);
       if (task.worker.toLowerCase() !== account.address.toLowerCase()) {
-        rechazar(403, { error: 'esa tarea no es de este agente' });
+        rechazar(403, { error: 'that task does not belong to this agent' });
         return;
       }
       if (task.status !== TaskStatus.Open) {
-        rechazar(409, { error: `la tarea está ${TaskStatus[task.status]}` });
+        rechazar(409, { error: `the task is ${TaskStatus[task.status]}` });
         return;
       }
       if (cred.address.toLowerCase() !== task.client.toLowerCase()) {
-        rechazar(403, { error: 'solo el cliente de la tarea puede subirle adjuntos' });
+        rechazar(403, { error: "only the task's client can upload attachments to it" });
         return;
       }
       if (!(await signedBy(briefSignMessage(taskId), cred.signature, task.client))) {
-        rechazar(401, { error: 'la firma no es del cliente de esta tarea' });
+        rechazar(401, { error: "the signature is not from this task's client" });
         return;
       }
 
-      // Nada puede pesar más que el mayor de los adjuntos anunciados: el
-      // tamaño va DENTRO del manifiesto, o sea dentro de lo que la cadena
-      // cubre. Se mira antes de leer para no tragarse los bytes de nadie.
+      // Nothing can weigh more than the largest announced attachment: the size
+      // is INSIDE the manifest, i.e. inside what the chain covers. Checked
+      // before reading so as not to swallow anyone's bytes.
       const tope = Math.min(MAX_FILE_BYTES, Math.max(...anunciados.map((f) => f.size)));
       const declarado = Number(req.headers['content-length'] ?? 0);
       if (declarado > tope) {
-        rechazar(413, { error: `ese archivo son ${declarado} bytes y el mayor que anunciaste mide ${tope}` });
+        rechazar(413, { error: `that file is ${declarado} bytes and the largest you announced is ${tope}` });
         return;
       }
 
@@ -1719,15 +1737,14 @@ const server = createServer((req, res) => {
       try {
         bytes = await readBodyBytes(req, tope);
       } catch (err) {
-        json(res, 413, { error: err instanceof Error ? err.message : 'cuerpo demasiado grande' });
+        json(res, 413, { error: err instanceof Error ? err.message : 'body too large' });
         return;
       }
 
-      // La guarda. Se busca por hash, así que el nombre que venga en la
-      // cabecera no decide nada: sólo desempata si el mismo archivo se
-      // adjuntó dos veces.
-      // El nombre viene percent-encoded: una cabecera HTTP no admite
-      // caracteres fuera de latin-1, y «recibo ñ.png» es un nombre normal.
+      // The guard. Matching is by hash, so the name in the header decides
+      // nothing: it only breaks ties if the same file was attached twice.
+      // The name comes percent-encoded: an HTTP header does not accept
+      // characters outside latin-1, and "receipt ñ.png" is a normal name.
       let nombre: string | undefined;
       const cabecera = req.headers['x-panal-filename'];
       if (typeof cabecera === 'string') {
@@ -1740,7 +1757,7 @@ const server = createServer((req, res) => {
       const anunciado = matchAttachment(anunciados, bytes, nombre);
       if (!anunciado) {
         json(res, 403, {
-          error: 'esos bytes no son ninguno de los adjuntos que anuncia el encargo',
+          error: 'those bytes are none of the attachments the brief announces',
           esperados: anunciados.map((f) => ({ name: f.name, size: f.size, hash: f.hash })),
         });
         return;
@@ -1749,7 +1766,7 @@ const server = createServer((req, res) => {
       guardarAdjunto(taskId, anunciado.name, bytes);
       const { faltan: pendientes } = repasarAdjuntos(taskId, brief);
       console.log(
-        `[panal] #${taskId} adjunto "${anunciado.name}" recibido (${bytes.byteLength} bytes) · faltan ${pendientes.length}`,
+        `[panal] #${taskId} attachment "${anunciado.name}" received (${bytes.byteLength} bytes) · ${pendientes.length} missing`,
       );
 
       json(res, 202, {
@@ -1758,8 +1775,8 @@ const server = createServer((req, res) => {
         faltanAdjuntos: pendientes.map((f) => ({ name: f.name, size: f.size, hash: f.hash })),
       });
 
-      // Con el último adjunto ya se puede trabajar. El encargo estaba en
-      // espera desde que llegó; esto es lo que lo suelta.
+      // With the last attachment, work can start. The brief has been waiting
+      // since it arrived; this is what releases it.
       if (pendientes.length === 0) {
         const sobreGuardado = sobrePendiente.get(taskId.toString()) ?? null;
         sobrePendiente.delete(taskId.toString());
@@ -1768,67 +1785,68 @@ const server = createServer((req, res) => {
       return;
     }
 
-    // ---- El cliente recoge su resultado -------------------------------------
+    // ---- The client collects their result ---------------------------------------
     const match = /^\/result\/(\d+)$/.exec(url.pathname);
     if (match && req.method === 'GET') {
       const taskId = BigInt(match[1]!);
       const cred = credencialesDe(req, url);
       if (!cred.address || !cred.signature) {
-        json(res, 400, { error: 'faltan address y signature (cabeceras x-panal-address / x-panal-signature)' });
+        json(res, 400, { error: 'address and signature missing (x-panal-address / x-panal-signature headers)' });
         return;
       }
       if (cred.porQuery) avisaQuery(taskId);
-      // Cacheado: aquí solo se usa el cliente, que no cambia nunca.
+      // Cached: only the client is used here, and it never changes.
       const cliente = await clienteDeTarea(taskId);
       if (cred.address.toLowerCase() !== cliente.toLowerCase()) {
-        json(res, 403, { error: 'solo el cliente de la tarea puede descargar el resultado' });
+        json(res, 403, { error: "only the task's client can download the result" });
         return;
       }
       if (!(await credencialValida(taskId, cred.signature, cred.expira, cliente))) {
-        json(res, 401, { error: 'firma inválida o caducada' });
+        json(res, 401, { error: 'invalid or expired signature' });
         return;
       }
       const text = loadResult(taskId);
       if (!text) {
-        json(res, 404, { error: 'todavía no hay resultado para esa tarea' });
+        json(res, 404, { error: 'there is no result for that task yet' });
         return;
       }
       json(res, 200, { resultText: text });
       return;
     }
 
-    // ---- El cliente se baja los archivos de su entrega ----------------------
+    // ---- The client downloads the files of their delivery -----------------------
     //
-    // Se protege igual que el resultado, y con LA MISMA firma: `Panal resultado
-    // #<id>` abre el texto y todos sus archivos. Firmar una vez por archivo
-    // sería pedirle al cliente cuatro firmas por una entrega de cuatro PDFs.
+    // Protected like the result, and with THE SAME signature: `Panal resultado
+    // #<id>` unlocks the text and all its files. Signing once per file would
+    // mean asking the client for four signatures for a delivery of four PDFs.
     const archivo = /^\/files\/(\d+)\/([^/]+)$/.exec(url.pathname);
     if (archivo && req.method === 'GET') {
       const taskId = BigInt(archivo[1]!);
       const cred = credencialesDe(req, url);
       if (!cred.address || !cred.signature) {
-        json(res, 400, { error: 'faltan address y signature (cabeceras x-panal-address / x-panal-signature)' });
+        json(res, 400, { error: 'address and signature missing (x-panal-address / x-panal-signature headers)' });
         return;
       }
       if (cred.porQuery) avisaQuery(taskId);
-      // Cacheado: aquí solo se usa el cliente, que no cambia nunca.
+      // Cached: only the client is used here, and it never changes.
       const cliente = await clienteDeTarea(taskId);
       if (cred.address.toLowerCase() !== cliente.toLowerCase()) {
-        json(res, 403, { error: 'solo el cliente de la tarea puede descargar sus archivos' });
+        json(res, 403, { error: "only the task's client can download its files" });
         return;
       }
       if (!(await credencialValida(taskId, cred.signature, cred.expira, cliente))) {
-        json(res, 401, { error: 'firma inválida o caducada' });
+        json(res, 401, { error: 'invalid or expired signature' });
         return;
       }
 
-      // El nombre viene de la URL, o sea de fuera: se limpia igual que al
-      // escribirlo. Sin esto, `/files/31/..%2F..%2F.env` leería el .env.
+      // The name comes from the URL, i.e. from outside: it is cleaned the same
+      // way as when writing it. Without this, `/files/31/..%2F..%2F.env` would
+      // read the .env.
       let nombre: string;
       try {
         nombre = sanitizeFileName(decodeURIComponent(archivo[2]!));
       } catch {
-        json(res, 400, { error: 'nombre de archivo inválido' });
+        json(res, 400, { error: 'invalid file name' });
         return;
       }
 
@@ -1836,15 +1854,15 @@ const server = createServer((req, res) => {
       try {
         bytes = readFileSync(join(filesDir(taskId), nombre));
       } catch {
-        json(res, 404, { error: 'esa tarea no tiene ese archivo' });
+        json(res, 404, { error: 'that task has no such file' });
         return;
       }
 
       res.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-length': bytes.byteLength,
-        // `attachment` a propósito: lo que hay dentro lo eligió el agente, y no
-        // se le deja que el navegador del cliente lo ejecute como una página.
+        // `attachment` on purpose: the agent chose what is inside, and the
+        // client's browser is not allowed to run it as a page.
         'content-disposition': comoAdjunto(nombre),
         'x-content-type-options': 'nosniff',
       });
@@ -1852,12 +1870,12 @@ const server = createServer((req, res) => {
       return;
     }
 
-    json(res, 404, { error: 'no existe' });
+    json(res, 404, { error: 'not found' });
   })().catch((err) => {
-    // «Todavía no la veo» NO es un 500. Con 425 (Too Early) quien llama sabe
-    // que reintentar tiene sentido; con 500 parecía una avería del agente y el
-    // dashboard se rendía dejando al cliente reenviando a mano. Se responde
-    // rápido y sin ruido en el log: no hay nada roto que mirar.
+    // "I do not see it yet" is NOT a 500. With 425 (Too Early) the caller knows
+    // retrying makes sense; with 500 it looked like an agent fault and the
+    // dashboard gave up, leaving the client resending by hand. It answers fast
+    // and without log noise: there is nothing broken to look at.
     if (err instanceof TareaAunNoVisible) {
       if (!res.headersSent) {
         json(res, 425, { error: err.message, reintentable: true });
@@ -1865,47 +1883,47 @@ const server = createServer((req, res) => {
       return;
     }
     console.error(`[http] ${err instanceof Error ? err.message : err}`);
-    if (!res.headersSent) json(res, 500, { error: 'error interno' });
+    if (!res.headersSent) json(res, 500, { error: 'internal error' });
     else res.end();
   });
 });
 
 server.listen(PORT);
 
-// El vigilante. Va DESPUÉS de escuchar: su primer repaso puede tardar unos
-// segundos contra el RPC, y durante ese rato el agente ya tiene que estar
-// atendiendo peticiones normales.
+// The watchdog. It starts AFTER listening: its first sweep can take a few
+// seconds against the RPC, and meanwhile the agent must already be serving
+// normal requests.
 arrancarVigilante({
   panal,
   yo: account.address,
   dataDir: DATA_DIR,
   briefGuardado: loadBrief,
-  // La misma guarda que usa work(): una sola fuente de verdad sobre qué se
-  // está trabajando ahora mismo.
+  // The same guard work() uses: a single source of truth about what is being
+  // worked on right now.
   enCurso: (taskId) => inFlight.has(taskId.toString()),
   resultadoGuardado: loadResult,
-  // Retomar un trabajo a medias es exactamente lo mismo que hacerlo la primera
-  // vez. El sobre va en null: la cadena que lo trajo ya no existe —el proceso
-  // que la sostenía murió—, así que esta reanudación no puede seguir gastando
-  // en nombre de nadie. Si el encargo necesitaba subcontratar, lo hará con el
-  // presupuesto propio de este agente y no con el de quien llamó.
-  // Solo `entregada` cuenta como resuelta. Un fallo del modelo o una espera de
-  // adjuntos devuelven false y la tarea se queda en la lista del vigilante.
+  // Resuming a half-done job is exactly the same as doing it the first time.
+  // The envelope is null: the chain that brought it no longer exists —the
+  // process holding it died—, so this resumption cannot keep spending on
+  // anyone's behalf. If the job needed delegation, it will use this agent's
+  // own budget and not the caller's.
+  // Only `entregada` (delivered) counts as resolved. A model failure or a wait
+  // for attachments returns false and the task stays on the watchdog's list.
   trabajar: async (taskId, brief) => (await work(taskId, brief, null)) === 'entregada',
   reentregar: async (taskId, texto) => {
     const { txHash } = await panal.deliverResult(taskId, texto);
-    console.log(`[vigilante] #${taskId} entregada al segundo intento · tx ${txHash}`);
+    console.log(`[watchdog] #${taskId} delivered on the second attempt · tx ${txHash}`);
   },
   urlPublica: process.env.PUBLIC_URL?.trim(),
 });
 
-// La retirada automática: lo que el escrow acredita por cada encargo aprobado
-// se queda en el contrato hasta que alguien llama a `withdraw`, y un agente que
-// corre solo no tiene a nadie que le dé al botón. `RETIRADA=off` la apaga; el
-// porqué de cada umbral está en retirada.ts.
-// Mientras el tablón coge un encargo la wallet está firmando, aunque `work()`
-// todavía no haya empezado. La retirada tiene que verlo: dos transacciones
-// seguidas de la misma wallet chocan por el nonce.
+// Automatic withdrawal: what the escrow credits for each approved job stays in
+// the contract until someone calls `withdraw`, and an agent running alone has
+// nobody to press the button. `RETIRADA=off` turns it off; the reason for each
+// threshold is in retirada.ts.
+// While the board is claiming a job the wallet is signing, even if `work()`
+// has not started yet. The withdrawal has to see that: two transactions in a
+// row from the same wallet clash on the nonce.
 let tablonFirmando = false;
 
 const retirada = opcionesDelEntorno(process.env);
@@ -1914,16 +1932,16 @@ if (retirada) {
     panal,
     yo: account.address,
     opciones: retirada,
-    // La misma guarda que el vigilante: con un encargo en marcha la wallet
-    // puede estar a punto de firmar su entrega, y dos transacciones seguidas
-    // chocan por el nonce.
+    // The same guard as the watchdog: with a job in progress the wallet may be
+    // about to sign its delivery, and two transactions in a row clash on the
+    // nonce.
     ocupado: () => inFlight.size > 0 || tablonFirmando,
   });
 }
 
-// El tablón: coger solo los encargos publicados sin dueño que encajen con este
-// agente. APAGADO salvo `TABLON=on`: coger es comprometerse a entregar. El
-// porqué de cada regla está en tablon.ts.
+// The job board: picking up, on its own, ownerless posted jobs that match this
+// agent. OFF unless `TABLON=on`: claiming is committing to deliver. The reason
+// for each rule is in tablon.ts.
 const tablon = opcionesTablon(process.env);
 if (tablon) {
   void arrancarTablon({
@@ -1934,8 +1952,8 @@ if (tablon) {
     marcar: (ocupada) => {
       tablonFirmando = ocupada;
     },
-    // El mismo camino que un encargo normal: guarda, trabaja, sirve la entrega
-    // desde este servidor —que es donde la busca el cliente— y la ancla.
+    // The same path as a normal job: saves, works, serves the delivery from
+    // this server —which is where the client looks for it— and anchors it.
     trabajar: (taskId, brief) => work(taskId, brief, null),
   });
 }

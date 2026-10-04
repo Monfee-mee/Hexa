@@ -1,57 +1,61 @@
 /**
- * Panal — tu ficha en el idioma de quien la lee.
+ * Panal — your profile card in the reader's language.
  *
  * ───────────────────────────────────────────────────────────────────────────
- * QUÉ ARREGLA
+ * WHAT IT FIXES
  *
- * El marketplace habla diez idiomas; tu ficha, uno. Tu descripción y los
- * nombres de tus niveles son texto que escribiste tú, y salen igual en las
- * diez versiones del escaparate: quien entra en árabe ve toda la interfaz en
- * árabe y tu agente descrito en español, o peor, la descripción en inglés y
- * los niveles en español, que es lo que pasa hoy en mainnet.
+ * The marketplace speaks ten languages; your profile, one. Your description
+ * and your tier names are text you wrote, and they show the same in all ten
+ * versions of the storefront: someone browsing in Arabic sees the whole
+ * interface in Arabic and your agent described in Spanish, or worse, the
+ * description in English and the tiers in Spanish, which is what happens on
+ * mainnet today.
  *
- * Aquí `GET /agent.json?lang=fr` devuelve tu MISMA ficha con las frases en
- * francés. Nadie tiene que aprender un formato nuevo: los lectores siguen
- * mirando `description` y `tiers[].name`, solo que traducidos.
+ * Here `GET /agent.json?lang=fr` returns your SAME profile with the phrases in
+ * French. Nobody has to learn a new format: readers keep looking at
+ * `description` and `tiers[].name`, just translated.
  *
- * QUÉ CUESTA, QUE ES LA PREGUNTA DE VERDAD
+ * WHAT IT COSTS, WHICH IS THE REAL QUESTION
  *
- * Una llamada a tu modelo por idioma, UNA VEZ. El resultado se guarda en disco
- * con la huella del texto original dentro del nombre, así que:
+ * One call to your model per language, ONCE. The result is stored on disk
+ * with the fingerprint of the original text in its name, so:
  *
- *   - la segunda petición en francés no llama a nadie;
- *   - y si cambias tu descripción, la huella cambia y se vuelve a traducir
- *     sola, sin que tengas que acordarte de borrar nada.
+ *   - the second request in French calls nobody;
+ *   - and if you change your description, the fingerprint changes and it is
+ *     translated again on its own, without you having to remember to delete
+ *     anything.
  *
- * Diez idiomas son diez llamadas en toda la vida de una descripción. Traducir
- * cuatro frases es la llamada más barata que va a hacer tu agente.
+ * Ten languages are ten calls over the whole life of a description.
+ * Translating four phrases is the cheapest call your agent will ever make.
  *
- * NADIE ESPERA A QUE TRADUZCA
+ * NOBODY WAITS FOR THE TRANSLATION
  *
- * La ficha se sirve SIEMPRE al momento. Si el idioma ya está guardado va
- * traducida; si no, va original y la traducción se pide POR DETRÁS, para la
- * próxima vez que alguien pregunte por ese idioma.
+ * The profile is ALWAYS served immediately. If the language is already stored
+ * it goes out translated; if not, it goes out original and the translation is
+ * requested IN THE BACKGROUND, for the next time someone asks for that
+ * language.
  *
- * Traducir dentro de la petición obliga a no reintentar, porque nadie va a
- * esperar a un modelo con la tarjeta en blanco. Y sin reintentos un
- * `429 Too Many Requests` —que en una cuenta compartida por cuatro agentes es
- * lo normal, no la excepción— significa «esta ficha no se traduce»; como no se
- * guarda nada, el siguiente que pregunte se come otro 429 y el idioma no llega
- * a traducirse NUNCA. Comprobado contra los agentes de mainnet: la misma
- * petición que falla con cero reintentos entra en cuanto se la deja insistir.
+ * Translating inside the request rules out retries, because nobody is going
+ * to wait for a model with a blank card. And without retries a
+ * `429 Too Many Requests` —which on an account shared by four agents is the
+ * norm, not the exception— means "this profile does not get translated"; as
+ * nothing is stored, the next one to ask eats another 429 and the language
+ * NEVER gets translated. Checked against the mainnet agents: the same request
+ * that fails with zero retries goes through as soon as it is allowed to
+ * insist.
  *
- * Fuera de la petición sí se puede insistir, porque no hay nadie mirando.
+ * Outside the request it can insist, because nobody is watching.
  *
- * CUANDO FALLA NO SE NOTA
+ * WHEN IT FAILS, NOBODY NOTICES
  *
- * Si el modelo no contesta, se acabó la cuota o no hay `LLM_API_KEY`, se sirve
- * la ficha ORIGINAL. Una traducción es una mejora, no un requisito: quedarse
- * sin ficha por no poder traducirla sería dejar al agente fuera del mercado
- * por un lujo.
+ * If the model does not answer, the quota ran out or there is no
+ * `LLM_API_KEY`, the ORIGINAL profile is served. A translation is an
+ * improvement, not a requirement: losing the profile for failing to translate
+ * it would keep the agent out of the market over a luxury.
  *
- * Y NO SE TRADUCE TU NOMBRE. «LexPanal» no significa nada en francés, y
- * traducirlo sería inventarle otro nombre a tu agente y romper toda referencia
- * escrita a él.
+ * AND YOUR NAME IS NOT TRANSLATED. "LexPanal" means nothing in French, and
+ * translating it would invent another name for your agent and break every
+ * written reference to it.
  * ───────────────────────────────────────────────────────────────────────────
  */
 
@@ -60,37 +64,37 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { llmChat, NOMBRE_IDIOMA, type Idioma, type LlmConfig } from '@panal/sdk';
 
-/** Lo que se traduce de una ficha. Nada más: el nombre del agente no se toca. */
+/** What gets translated from a profile. Nothing else: the agent's name is left alone. */
 export interface Frases {
   description: string;
-  /** Nombre y descripción de cada nivel, en el orden en que van en la ficha. */
+  /** Name and description of each tier, in the order they appear in the profile. */
   tiers: { name: string; description: string }[];
 }
 
-/** Tope de la respuesta que se acepta del modelo, por frase. */
+/** Cap on the model's answer accepted per phrase. */
 const MAX_FRASE = 400;
 
 /**
- * Cuánto se espera al modelo, y cuántas veces se insiste.
+ * How long to wait for the model, and how many times to insist.
  *
- * Holgado porque esto ya NO corre dentro de la petición de la ficha: nadie está
- * mirando. Los reintentos son lo que hace que la traducción llegue; sin ellos
- * un 429 pasajero dejaba el idioma sin traducir para siempre.
+ * Generous because this NO LONGER runs inside the profile request: nobody is
+ * watching. The retries are what make the translation arrive; without them a
+ * passing 429 left the language untranslated forever.
  */
 const ESPERA_MS = 60_000;
 const REINTENTOS = 4;
 
 /**
- * Los idiomas que se están traduciendo ahora mismo.
+ * The languages being translated right now.
  *
- * El indexador pide los diez seguidos, y sin esta lista tres peticiones en
- * francés llegadas antes de que vuelva la primera lanzarían tres traducciones
- * idénticas: tres veces el gasto contra una cuenta que ya va justa de
- * peticiones por minuto, para escribir el mismo archivo.
+ * The indexer asks for all ten in a row, and without this set three French
+ * requests arriving before the first one returns would fire three identical
+ * translations: three times the spend against an account already short on
+ * requests per minute, to write the same file.
  */
 const enCurso = new Set<string>();
 
-/** La huella del texto original: si cambia, la traducción guardada ya no vale. */
+/** Fingerprint of the original text: if it changes, the stored translation is stale. */
 function huella(frases: Frases): string {
   return createHash('sha256').update(JSON.stringify(frases)).digest('hex').slice(0, 16);
 }
@@ -99,7 +103,7 @@ function rutaCache(dir: string, idioma: Idioma, h: string): string {
   return join(dir, 'idiomas', `${idioma}-${h}.json`);
 }
 
-/** Lo guardado, si vale. Nunca lanza: un archivo roto es como si no estuviera. */
+/** What is stored, if valid. Never throws: a broken file counts as missing. */
 function leerGuardado(dir: string, idioma: Idioma, h: string): Frases | null {
   try {
     const ruta = rutaCache(dir, idioma, h);
@@ -115,20 +119,21 @@ function guardar(dir: string, idioma: Idioma, h: string, frases: Frases): void {
     mkdirSync(join(dir, 'idiomas'), { recursive: true });
     writeFileSync(rutaCache(dir, idioma, h), JSON.stringify(frases), 'utf8');
   } catch {
-    // Sin disco se traduce más veces, que es lo peor que puede pasar aquí.
+    // Without a disk it just translates more often, which is the worst that
+    // can happen here.
   }
 }
 
 /**
- * Lo que devolvió el modelo, comprobado contra la forma que se le pidió.
+ * What the model returned, checked against the shape it was asked for.
  *
- * Un modelo puede contestar cualquier cosa: una disculpa, el JSON envuelto en
- * markdown, o la lista con un nivel de más. Lo que no cuadre se descarta
- * ENTERO y se sirve el original, porque media traducción en una tarjeta es
- * peor que ninguna: parece que al agente le falta la mitad de la ficha.
+ * A model can answer anything: an apology, the JSON wrapped in markdown, or
+ * the list with one tier too many. Anything that does not fit is discarded
+ * WHOLE and the original is served, because half a translation on a card is
+ * worse than none: it looks like the agent is missing half its profile.
  *
- * `original` sirve para exigir el mismo número de niveles. Con `null` solo se
- * comprueba la forma, que es lo que hace falta al leer del disco.
+ * `original` is used to require the same number of tiers. With `null` only
+ * the shape is checked, which is what is needed when reading from disk.
  */
 function validar(v: unknown, original: Frases | null): Frases | null {
   if (!v || typeof v !== 'object') return null;
@@ -147,13 +152,13 @@ function validar(v: unknown, original: Frases | null): Frases | null {
   return { description: description.trim().slice(0, MAX_FRASE), tiers: salida };
 }
 
-/** El JSON que venga, aunque llegue envuelto en un bloque de markdown. */
+/** Whatever JSON comes back, even if wrapped in a markdown block. */
 function comoJson(crudo: string): unknown {
   const limpio = crudo.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '');
   try {
     return JSON.parse(limpio);
   } catch {
-    // A veces el modelo escribe una frase antes del JSON. Se busca el objeto.
+    // Sometimes the model writes a sentence before the JSON. Look for the object.
     const i = limpio.indexOf('{');
     const j = limpio.lastIndexOf('}');
     if (i < 0 || j <= i) return null;
@@ -173,21 +178,21 @@ const SISTEMA =
   'stay short. Do not translate brand names, product names or code identifiers.';
 
 /**
- * Las frases ya traducidas, si están guardadas. NO llama a nadie.
+ * The already translated phrases, if stored. Calls NOBODY.
  *
- * Esta es la que usa la ficha, y por eso es síncrona: contesta en microsegundos
- * y no puede hacer esperar a quien pide `/agent.json`.
+ * This is the one the profile uses, which is why it is synchronous: it answers
+ * in microseconds and cannot keep whoever requests `/agent.json` waiting.
  */
 export function frasesGuardadas(frases: Frases, idioma: Idioma, dir: string): Frases | null {
   return leerGuardado(dir, idioma, huella(frases));
 }
 
 /**
- * Pide la traducción POR DETRÁS, para la próxima vez.
+ * Requests the translation IN THE BACKGROUND, for next time.
  *
- * No devuelve nada y no se espera: quien la llama ya ha servido la ficha
- * original. Si sale bien queda guardada y la siguiente petición en ese idioma
- * la encuentra hecha; si sale mal no se entera nadie y se reintentará.
+ * Returns nothing and is not awaited: the caller has already served the
+ * original profile. If it works it gets stored and the next request in that
+ * language finds it done; if it fails nobody notices and it will be retried.
  */
 export function pedirTraduccion(
   frases: Frases,
@@ -204,11 +209,11 @@ export function pedirTraduccion(
 }
 
 /**
- * Las frases de la ficha en otro idioma, esperando al modelo.
+ * The profile phrases in another language, waiting for the model.
  *
- * Devuelve `null` cuando no se ha podido traducir. La ficha NO la llama
- * directamente —usa el par de arriba—; esta existe para las pruebas y para
- * traducir a mano, donde sí se quiere el resultado.
+ * Returns `null` when it could not be translated. The profile does NOT call
+ * it directly —it uses the pair above—; this one exists for tests and for
+ * translating by hand, where the result is actually wanted.
  */
 export async function traducirFrases(
   frases: Frases,
@@ -216,7 +221,7 @@ export async function traducirFrases(
   llm: LlmConfig | null,
   dir: string,
 ): Promise<Frases | null> {
-  // Sin nada que traducir no se molesta a nadie.
+  // With nothing to translate, nobody gets bothered.
   if (!frases.description.trim() && frases.tiers.length === 0) return null;
 
   const h = huella(frases);
@@ -240,7 +245,7 @@ export async function traducirFrases(
     guardar(dir, idioma, h, traducido);
     return traducido;
   } catch {
-    // Sin clave, sin cuota, sin red o con el modelo caído: la ficha original.
+    // No key, no quota, no network or the model is down: the original profile.
     return null;
   }
 }

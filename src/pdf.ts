@@ -1,50 +1,50 @@
 /**
- * Un PDF de verdad, sin dependencias. Puedes borrar este archivo si tu agente
- * no entrega PDFs.
+ * A real PDF, with no dependencies. You can delete this file if your agent
+ * does not deliver PDFs.
  *
- * No es una plantilla ni un HTML impreso: se escriben los objetos del PDF a
- * mano, con su tabla xref y sus offsets en bytes. Sale un archivo que abre
- * cualquier lector, y no añade ni un paquete a tus dependencias — meter una
- * librería de 4 MB para pintar texto monoespaciado en un A4 no sale a cuenta.
+ * It is not a template or printed HTML: the PDF objects are written by hand,
+ * with their xref table and byte offsets. The result opens in any reader and
+ * adds not a single package to your dependencies — pulling in a 4 MB library
+ * to draw monospaced text on an A4 page is not worth it.
  *
- * Se usa desde `agent.ts`:
+ * Used from `agent.ts`:
  *
- *     const pdf = textoAPdf('Mi informe', texto);
- *     return { text: texto, files: [{ name: 'informe.pdf', data: pdf, mime: 'application/pdf' }] };
+ *     const pdf = textoAPdf('My report', text);
+ *     return { text, files: [{ name: 'report.pdf', data: pdf, mime: 'application/pdf' }] };
  *
- * El motor calcula su hash y lo ancla en la cadena; tú no tocas nada de eso.
+ * The engine computes its hash and anchors it on-chain; you touch none of that.
  *
- * Lo que hace bien y cuesta acertar a mano: parte las líneas largas para que no
- * se salgan del papel, pagina solo, y traduce los símbolos que la codificación
- * del PDF no tiene en vez de destrozarlos en silencio.
+ * What it gets right that is hard to get right by hand: it wraps long lines so
+ * they do not run off the page, paginates on its own, and translates the
+ * symbols the PDF encoding lacks instead of silently mangling them.
  */
 
-/** A4 en puntos, que es la unidad del PDF. */
+/** A4 in points, the PDF unit. */
 const ANCHO = 595;
 const ALTO = 842;
 const MARGEN = 50;
 const CUERPO = 9.5;
 const INTERLINEA = 12.5;
-/** Cuántas líneas caben en una página con estos márgenes. */
+/** How many lines fit on a page with these margins. */
 const LINEAS_POR_PAGINA = Math.floor((ALTO - MARGEN * 2) / INTERLINEA);
-/** Ancho de caracteres a 9.5pt en Courier: 0.6 em, redondeado a la baja. */
+/** Character width at 9.5pt in Courier: 0.6 em, rounded down. */
 const COLUMNAS = Math.floor((ANCHO - MARGEN * 2) / (CUERPO * 0.6));
 
 /**
- * Escapa un texto para meterlo entre paréntesis en un PDF.
+ * Escapes a text to put it between parentheses in a PDF.
  *
- * Los paréntesis delimitan las cadenas, así que uno sin escapar rompe el
- * archivo entero — y un JSON viene lleno de ellos.
+ * Parentheses delimit strings, so an unescaped one breaks the whole file — and
+ * a JSON is full of them.
  */
 function escapar(texto: string): string {
   return texto.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
 /**
- * Parte las líneas largas para que no se salgan del papel.
+ * Wraps long lines so they do not run off the page.
  *
- * Un PDF no ajusta el texto solo: lo que no cabe, sencillamente no se ve. Con
- * un JSON de una sola línea eso significa entregar una hoja casi en blanco.
+ * A PDF does not wrap text by itself: whatever does not fit is simply not
+ * shown. With a single-line JSON that means delivering an almost blank page.
  */
 function ajustar(lineas: string[]): string[] {
   const out: string[] = [];
@@ -53,8 +53,8 @@ function ajustar(lineas: string[]): string[] {
       out.push(linea);
       continue;
     }
-    // Se conserva la sangría al partir: en un JSON es lo que deja ver la
-    // estructura, y sin ella el corte lo vuelve ilegible.
+    // Indentation is kept when wrapping: in a JSON it is what shows the
+    // structure, and without it the break makes it unreadable.
     const sangria = /^\s*/.exec(linea)![0].slice(0, 20);
     let resto = linea;
     let primera = true;
@@ -69,26 +69,26 @@ function ajustar(lineas: string[]): string[] {
 }
 
 /**
- * Sustitutos ASCII de los símbolos que WinAnsiEncoding no tiene.
+ * ASCII stand-ins for the symbols WinAnsiEncoding lacks.
  *
- * Sin esto, `Buffer.from(txt, 'latin1')` los recorta al byte bajo y salen
- * caracteres que no significan nada: un "≠" acababa impreso como "`", así que
- * un caso de prueba que decía "b ≠ 0" pasaba a decir "b ` 0". Silencioso, y
- * dentro de un entregable que se cobra.
+ * Without this, `Buffer.from(txt, 'latin1')` truncates them to the low byte
+ * and out come meaningless characters: a "≠" ended up printed as "`", so a
+ * test case reading "b ≠ 0" turned into "b ` 0". Silent, and inside a paid
+ * deliverable.
  */
 const SUSTITUTOS: Record<string, string> = {
   '≠': '!=', '≤': '<=', '≥': '>=', '≈': '~=', '±': '+/-', '×': 'x', '÷': '/',
-  '→': '->', '←': '<-', '⇒': '=>', '∞': 'infinito', '∅': 'vacio',
+  '→': '->', '←': '<-', '⇒': '=>', '∞': 'infinity', '∅': 'empty',
   '“': '"', '”': '"', '„': '"', '‘': "'", '’': "'", '‹': '<', '›': '>',
   '–': '-', '—': '-', '…': '...', '•': '-', '·': '·', '™': '(TM)', '€': 'EUR',
 };
 
 /**
- * Latin-1, que es lo que entiende WinAnsiEncoding —la codificación de las
- * fuentes base del PDF—, sustituyendo antes lo que no cabe.
+ * Latin-1, which is what WinAnsiEncoding —the encoding of the PDF base
+ * fonts— understands, replacing first whatever does not fit.
  *
- * Lo que no tiene sustituto se marca con "?" a propósito: un interrogante
- * avisa de que ahí faltaba algo; un carácter aleatorio miente.
+ * Anything with no stand-in is marked with "?" on purpose: a question mark
+ * warns that something was missing there; a random character lies.
  */
 function aLatin1(texto: string): Buffer {
   const convertido = [...texto]
@@ -100,20 +100,20 @@ function aLatin1(texto: string): Buffer {
   return Buffer.from(convertido, 'latin1');
 }
 
-/** Construye el PDF. Devuelve los bytes, listos para escribir o entregar. */
+/** Builds the PDF. Returns the bytes, ready to write or deliver. */
 export function textoAPdf(titulo: string, contenido: string): Uint8Array {
   const lineas = ajustar([titulo, '', ...contenido.split('\n')]);
 
-  // Se reparte en páginas antes de escribir nada: hay que saber cuántas son
-  // para numerar los objetos, y en un PDF los objetos se referencian por número.
+  // Split into pages before writing anything: we need to know how many there
+  // are to number the objects, and PDF objects are referenced by number.
   const paginas: string[][] = [];
   for (let i = 0; i < lineas.length; i += LINEAS_POR_PAGINA) {
     paginas.push(lineas.slice(i, i + LINEAS_POR_PAGINA));
   }
-  if (paginas.length === 0) paginas.push(['(sin contenido)']);
+  if (paginas.length === 0) paginas.push(['(no content)']);
 
-  // Numeración: 1 catálogo, 2 árbol de páginas, 3 fuente, y luego cada página
-  // con su flujo de contenido, dos objetos por página.
+  // Numbering: 1 catalog, 2 page tree, 3 font, then each page with its
+  // content stream, two objects per page.
   const FUENTE = 3;
   const primeraPagina = 4;
   const idPagina = (i: number) => primeraPagina + i * 2;
@@ -150,13 +150,13 @@ export function textoAPdf(titulo: string, contenido: string): Uint8Array {
         'ET',
       ].join('\n'),
     );
-    // /Length va en BYTES, no en caracteres: con acentos no es lo mismo, y un
-    // lector estricto rechaza el archivo si no cuadra.
+    // /Length is in BYTES, not characters: with accents they differ, and a
+    // strict reader rejects the file if it does not match.
     add(idContenido(i), Buffer.concat([aLatin1(`<< /Length ${flujo.length} >>\nstream\n`), flujo, aLatin1('\nendstream')]));
   });
 
-  // Ensamblado: hay que ir apuntando el offset en bytes de cada objeto, porque
-  // la tabla xref del final los indexa por posición absoluta en el archivo.
+  // Assembly: the byte offset of each object has to be recorded, because the
+  // xref table at the end indexes them by absolute position in the file.
   const total = objetos.length - 1;
   const partes: Buffer[] = [aLatin1('%PDF-1.4\n')];
   const offsets: number[] = [];
