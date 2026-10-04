@@ -181,7 +181,7 @@ export async function runJob(brief: string, ctx: TaskContext, deps: Deps): Promi
       output.files.map((f) => `${f.name} ${f.data.byteLength} B`).join(', '),
   );
   return {
-    text: deliveryText(brief, job, output),
+    text: deliveryText(job, output),
     files: output.files.map((f) => ({ name: f.name, data: f.data, mime: f.mime })),
   };
 }
@@ -194,16 +194,6 @@ function mimeOf(a: AdjuntoRecibido): string {
 
 function isImage(a: AdjuntoRecibido): boolean {
   return (a.mime ?? '').startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(a.name);
-}
-
-/**
- * Was the brief written in Spanish? Enough to answer a Spanish-speaking
- * client in their language; everything else gets English.
- */
-export function isSpanish(brief: string): boolean {
-  if (/[ñ¿¡áéíóú]/i.test(brief)) return true;
-  const words = brief.toLowerCase().match(/\b(el|la|los|las|un|una|de|del|con|que|para|por|en|y)\b/g) ?? [];
-  return words.length >= 2;
 }
 
 /**
@@ -245,32 +235,21 @@ async function preparePrompt(brief: string, kind: Kind, withReference: boolean):
 }
 
 /** Text that goes with the files. It is anchored on-chain: short and exact. */
-function deliveryText(brief: string, job: Job, out: Output): string {
-  const es = isSpanish(brief);
+function deliveryText(job: Job, out: Output): string {
   const names = out.files.map((f) => f.name).join(', ');
   const lines: string[] = [];
   if (job.kind === 'video') {
-    lines.push(
-      es
-        ? `Aquí tienes tu vídeo de ${job.duration} segundos${job.reference ? ', animado a partir de tu imagen' : ''}: ${names}.`
-        : `Here is your ${job.duration}-second video${job.reference ? ', animated from your image' : ''}: ${names}.`,
-    );
+    lines.push(`Here is your ${job.duration}-second video${job.reference ? ', animated from your image' : ''}: ${names}.`);
   } else {
     const n = out.files.length;
     lines.push(
-      es
-        ? `${n === 1 ? 'Aquí tienes tu imagen' : `Aquí tienes tus ${n} imágenes`}${job.reference ? ', editadas a partir de tu foto' : ''}: ${names}.`
-        : `${n === 1 ? 'Here is your image' : `Here are your ${n} images`}${job.reference ? ', edited from your photo' : ''}: ${names}.`,
+      `${n === 1 ? 'Here is your image' : `Here are your ${n} images`}${job.reference ? ', edited from your photo' : ''}: ${names}.`,
     );
   }
-  lines.push((es ? 'Prompt usado: ' : 'Prompt used: ') + job.prompt);
-  lines.push((es ? 'Modelo: ' : 'Model: ') + out.model + ' (fal.ai)');
+  lines.push('Prompt used: ' + job.prompt);
+  lines.push('Model: ' + out.model + ' (fal.ai)');
   if (out.censored > 0) {
-    lines.push(
-      es
-        ? `Aviso: el filtro de seguridad tapó ${out.censored} imagen(es). Si no era tu intención, reformula el encargo.`
-        : `Note: the safety filter blanked ${out.censored} image(s). If that was not intended, rephrase the request.`,
-    );
+    lines.push(`Note: the safety filter blanked ${out.censored} image(s). If that was not intended, rephrase the request.`);
   }
   return lines.join('\n');
 }
@@ -281,9 +260,8 @@ function deliveryText(brief: string, job: Job, out: Output): string {
  * told what happened and how to get their money back.
  */
 function honestFailure(brief: string, reason: string): string {
-  return isSpanish(brief)
-    ? `No pude completar este encargo: ${reason}.\n\nLo que pediste:\n${brief}\n\n` +
-        'Puedes abrir una disputa desde https://panal.lat/dashboard para recuperar tu pago.'
-    : `I could not complete this job: ${reason}.\n\nYour request:\n${brief}\n\n` +
-        'You can open a dispute at https://panal.lat/dashboard to get your payment back.';
+  return (
+    `I could not complete this job: ${reason}.\n\nYour request:\n${brief}\n\n` +
+    'You can open a dispute at https://panal.lat/dashboard to get your payment back.'
+  );
 }

@@ -1,46 +1,48 @@
 /**
- * Leer un ZIP sin dependencias.
+ * Reading a ZIP with no dependencies.
  *
- * Hace falta para DOS cosas que parecen distintas y son la misma: una carpeta
- * que el cliente comprimió, y un `.docx` —que es un ZIP con XML dentro—. Con
- * un lector se resuelven las dos.
+ * It is needed for TWO things that look different and are the same: a folder
+ * the client compressed, and a `.docx` —which is a ZIP with XML inside—. One
+ * reader solves both.
  *
- * Node trae `zlib`, que es el 90% del trabajo. Lo que falta es entender la
- * estructura del archivo, y es poca cosa: se lee el directorio central del
- * final, no las cabeceras locales, porque el directorio central es el índice
- * fiable —las locales pueden traer los tamaños a cero y remitir a un
- * descriptor que va DETRÁS de los datos—.
+ * Node ships `zlib`, which is 90% of the work. What is missing is
+ * understanding the file structure, and that is little: the central directory
+ * at the end is read, not the local headers, because the central directory is
+ * the reliable index —local headers can carry zero sizes and point to a
+ * descriptor that comes AFTER the data—.
  *
  * ───────────────────────────────────────────────────────────────────────────
- * ESTO LO MANDA UN DESCONOCIDO Y HAY QUE TRATARLO COMO TAL.
+ * THIS IS SENT BY A STRANGER AND MUST BE TREATED AS SUCH.
  *
- * El ZIP llega de un cliente que pagó, pero pagar no vuelve a nadie de fiar.
- * Tres defensas, y las tres importan:
+ * The ZIP comes from a client who paid, but paying does not make anyone
+ * trustworthy. Three defences, and all three matter:
  *
- *   - Una bomba zip: 42 kB que se descomprimen en petabytes. Se mira el tamaño
- *     DECLARADO antes de descomprimir y se lleva un total acumulado, así que
- *     se corta antes de reservar la memoria, no después.
- *   - Rutas con `..` o absolutas: aquí nada se escribe en disco, pero el
- *     nombre viaja al modelo y acaba en logs. Se normaliza igual.
- *   - Un ZIP con cien mil entradas vacías, que no infla memoria pero sí tiempo.
+ *   - A zip bomb: 42 kB that decompress into petabytes. The DECLARED size is
+ *     checked before decompressing and a running total is kept, so it stops
+ *     before allocating the memory, not after.
+ *   - Paths with `..` or absolute ones: nothing is written to disk here, but
+ *     the name travels to the model and ends up in logs. It is normalized
+ *     anyway.
+ *   - A ZIP with a hundred thousand empty entries, which does not inflate
+ *     memory but does inflate time.
  * ───────────────────────────────────────────────────────────────────────────
  */
 
 import { inflateRawSync } from 'node:zlib';
 
-/** Un archivo dentro del ZIP, ya descomprimido. */
+/** A file inside the ZIP, already decompressed. */
 export interface EntradaZip {
-  /** La ruta dentro del ZIP, ya normalizada. */
+  /** The path inside the ZIP, already normalized. */
   nombre: string;
   bytes: Uint8Array;
 }
 
 export interface LimitesZip {
-  /** Cuántas entradas se miran como mucho. */
+  /** Maximum number of entries looked at. */
   maxEntradas: number;
-  /** Tope del total descomprimido, sumando todas. */
+  /** Cap on the total decompressed size, all entries added up. */
   maxTotalBytes: number;
-  /** Tope de una sola entrada. */
+  /** Cap on a single entry. */
   maxEntradaBytes: number;
 }
 
@@ -50,7 +52,7 @@ export const LIMITES_ZIP: LimitesZip = {
   maxEntradaBytes: 8 * 1024 * 1024,
 };
 
-/** Los cuatro bytes con los que empieza todo ZIP (y todo .docx, .xlsx, .odt). */
+/** The four bytes every ZIP starts with (and every .docx, .xlsx, .odt). */
 export function esZip(bytes: Uint8Array): boolean {
   return bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
 }
@@ -60,11 +62,11 @@ const u32 = (b: Uint8Array, i: number): number =>
   (b[i]! | (b[i + 1]! << 8) | (b[i + 2]! << 16) | (b[i + 3]! << 24)) >>> 0;
 
 /**
- * Quita lo que haría daño de una ruta interna.
+ * Strips whatever would do harm from an internal path.
  *
- * No se escribe nada en disco, así que esto no evita un escape de directorio:
- * evita que un nombre inventado —`../../etc/passwd`— llegue al modelo y a los
- * logs como si fuera un archivo de verdad del cliente.
+ * Nothing is written to disk, so this does not prevent a directory escape: it
+ * prevents a made-up name —`../../etc/passwd`— from reaching the model and the
+ * logs as if it were a real client file.
  */
 function rutaLimpia(nombre: string): string {
   return nombre
@@ -75,10 +77,10 @@ function rutaLimpia(nombre: string): string {
     .slice(0, 200);
 }
 
-/** Dónde empieza el directorio central. Se busca desde el final. */
+/** Where the central directory starts. Searched from the end. */
 function buscarDirectorio(b: Uint8Array): number | null {
-  // El comentario final puede ocupar hasta 64 kB, así que no basta con mirar
-  // los últimos 22 bytes.
+  // The trailing comment can take up to 64 kB, so looking at the last 22
+  // bytes is not enough.
   const desde = Math.max(0, b.length - 22 - 0xffff);
   for (let i = b.length - 22; i >= desde; i--) {
     if (u32(b, i) === 0x06054b50) return u32(b, i + 16);
@@ -87,12 +89,12 @@ function buscarDirectorio(b: Uint8Array): number | null {
 }
 
 /**
- * Los archivos de un ZIP, descomprimidos y acotados.
+ * The files of a ZIP, decompressed and capped.
  *
- * Las carpetas y las entradas vacías se saltan solas: lo que interesa es el
- * contenido. Una entrada que no se puede descomprimir se OMITE en vez de
- * tumbar la lectura entera — un ZIP con un archivo roto sigue teniendo diez
- * buenos, y el cliente ya pagó por que se mire lo que sí se puede.
+ * Folders and empty entries are skipped on their own: the content is what
+ * matters. An entry that cannot be decompressed is SKIPPED instead of taking
+ * down the whole read — a ZIP with one broken file still has ten good ones,
+ * and the client already paid for whatever can be read to be read.
  */
 export function leerZip(datos: Uint8Array, limites: LimitesZip = LIMITES_ZIP): EntradaZip[] {
   const inicio = buscarDirectorio(datos);
@@ -115,15 +117,15 @@ export function leerZip(datos: Uint8Array, limites: LimitesZip = LIMITES_ZIP): E
     cursor += 46 + nLargo + extraLargo + comentarioLargo;
 
     if (salida.length >= limites.maxEntradas) break;
-    // El tamaño se comprueba ANTES de descomprimir: es lo único que separa
-    // esto de reservar los petabytes que la bomba pide.
+    // The size is checked BEFORE decompressing: it is the only thing standing
+    // between this and allocating the petabytes the bomb asks for.
     if (!nombre || sinComprimir === 0) continue;
     if (sinComprimir > limites.maxEntradaBytes) continue;
     if (total + sinComprimir > limites.maxTotalBytes) break;
 
-    // Ahora sí hay que mirar la cabecera local, sólo para saber dónde
-    // empiezan los datos: su longitud de extra puede ser distinta de la del
-    // directorio central, y darlo por hecho desplaza la lectura.
+    // Now the local header does have to be read, only to know where the data
+    // starts: its extra length can differ from the central directory's, and
+    // assuming it is the same shifts the read.
     if (offsetLocal + 30 > datos.length || u32(datos, offsetLocal) !== 0x04034b50) continue;
     const datosEn = offsetLocal + 30 + u16(datos, offsetLocal + 26) + u16(datos, offsetLocal + 28);
     if (datosEn + comprimido > datos.length) continue;
@@ -135,7 +137,7 @@ export function leerZip(datos: Uint8Array, limites: LimitesZip = LIMITES_ZIP): E
       total += bytes.length;
       salida.push({ nombre, bytes });
     } catch {
-      // Entrada corrupta o cifrada: se omite y se sigue con las demás.
+      // Corrupt or encrypted entry: skip it and carry on with the rest.
       continue;
     }
   }
@@ -144,15 +146,15 @@ export function leerZip(datos: Uint8Array, limites: LimitesZip = LIMITES_ZIP): E
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
- * ESCRIBIR
+ * WRITING
  *
- * Hace falta para devolver un `.docx`, que es un ZIP con XML dentro. El mismo
- * formato que se lee arriba, al revés.
+ * Needed to return a `.docx`, which is a ZIP with XML inside. The same format
+ * read above, the other way round.
  * ══════════════════════════════════════════════════════════════════════════ */
 
 import { deflateRawSync } from 'node:zlib';
 
-/** CRC-32, que el ZIP exige por entrada. Tabla al vuelo: son 256 valores. */
+/** CRC-32, which ZIP requires per entry. Table built on the fly: 256 values. */
 function crc32(bytes: Uint8Array): number {
   let c: number;
   const tabla: number[] = [];
@@ -174,12 +176,13 @@ function escribirU32(v: number): number[] {
 }
 
 /**
- * Monta un ZIP.
+ * Builds a ZIP.
  *
- * Se comprime todo con deflate. Sin fecha real —se pone la del epoch de MS-DOS
- * y ya— porque un archivo que cambia de bytes cada vez que se genera rompe una
- * propiedad que aquí importa: el hash de la entrega se ancla en la cadena, y
- * generar dos veces lo mismo tiene que dar exactamente lo mismo.
+ * Everything is compressed with deflate. No real date —the MS-DOS epoch is
+ * used and that is it— because a file whose bytes change every time it is
+ * generated breaks a property that matters here: the delivery hash is anchored
+ * on-chain, and generating the same thing twice must give exactly the same
+ * bytes.
  */
 export function escribirZip(entradas: { nombre: string; bytes: Uint8Array }[]): Uint8Array {
   const local: number[] = [];
@@ -193,11 +196,11 @@ export function escribirZip(entradas: { nombre: string; bytes: Uint8Array }[]): 
 
     const cabecera = [
       ...escribirU32(0x04034b50),
-      ...escribirU16(20), // versión mínima
+      ...escribirU16(20), // minimum version
       ...escribirU16(0),
       ...escribirU16(8), // deflate
-      ...escribirU16(0), // hora
-      ...escribirU16(0x21), // fecha: 1980-01-01
+      ...escribirU16(0), // time
+      ...escribirU16(0x21), // date: 1980-01-01
       ...escribirU32(crc),
       ...escribirU32(comprimido.length),
       ...escribirU32(e.bytes.length),
@@ -209,7 +212,7 @@ export function escribirZip(entradas: { nombre: string; bytes: Uint8Array }[]): 
 
     central.push(
       ...escribirU32(0x02014b50),
-      ...escribirU16(20), // versión que lo creó
+      ...escribirU16(20), // version made by
       ...escribirU16(20),
       ...escribirU16(0),
       ...escribirU16(8),
@@ -220,10 +223,10 @@ export function escribirZip(entradas: { nombre: string; bytes: Uint8Array }[]): 
       ...escribirU32(e.bytes.length),
       ...escribirU16(nombre.length),
       ...escribirU16(0),
-      ...escribirU16(0), // comentario
-      ...escribirU16(0), // disco
-      ...escribirU16(0), // atributos internos
-      ...escribirU32(0), // atributos externos
+      ...escribirU16(0), // comment
+      ...escribirU16(0), // disk
+      ...escribirU16(0), // internal attributes
+      ...escribirU32(0), // external attributes
       ...escribirU32(offset),
       ...nombre,
     );

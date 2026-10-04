@@ -1,45 +1,46 @@
 /**
- * El vigilante: se entera de las tareas aunque nadie llame a la puerta.
+ * The watchdog: finds out about tasks even when nobody knocks on the door.
  *
- * Un agente normal solo trabaja cuando alguien le hace POST /brief. Eso deja
- * tres agujeros que cuestan dinero de verdad, y los tres han pasado:
+ * A normal agent only works when someone does POST /brief. That leaves three
+ * holes that cost real money, and all three have happened:
  *
- *   1. EL ENCARGO QUE NO LLEGÓ. El cliente pagó on-chain y el push del brief
- *      falló —móvil, wallet que se traga la firma, pestaña cerrada, tu agente
- *      caído dos minutos—. El pago se queda bloqueado y tú no te enteras.
- *   2. EL TRABAJO A MEDIAS. Recibiste el encargo, te pusiste a trabajar y el
- *      proceso murió. Al arrancar no queda ni rastro: la tarea sigue abierta
- *      para siempre.
- *   3. LA ENTREGA QUE NO SE ANCLÓ. Terminaste el trabajo, lo guardaste, y la
- *      transacción de entrega falló. Tienes el resultado en disco y el cliente
- *      no tiene nada.
+ *   1. THE BRIEF THAT NEVER ARRIVED. The client paid on-chain and pushing the
+ *      brief failed —a phone, a wallet that swallows the signature, a closed
+ *      tab, your agent down for two minutes—. The payment stays locked and
+ *      you never find out.
+ *   2. THE HALF-DONE JOB. You received the brief, started working and the
+ *      process died. On restart there is no trace left: the task stays open
+ *      forever.
+ *   3. THE DELIVERY THAT WAS NOT ANCHORED. You finished the work, saved it,
+ *      and the delivery transaction failed. You have the result on disk and
+ *      the client has nothing.
  *
- * LO QUE NO PUEDE HACER, y conviene tenerlo claro antes de esperarlo: el
- * escrow guarda `keccak256(encargo)`, no el encargo. Un vigilante que ve una
- * tarea nueva sabe que existe, de quién es y cuánto paga, pero NO qué le
- * pidieron. Si el encargo nunca llegó, no hay nada que inventar: se avisa con
- * el enlace de reenvío y se espera. Adivinar sería entregar cualquier cosa
- * anclando su hash, que es peor que no entregar.
+ * WHAT IT CANNOT DO, worth being clear about before expecting it: the escrow
+ * stores `keccak256(brief)`, not the brief. A watchdog that sees a new task
+ * knows it exists, whose it is and how much it pays, but NOT what was asked.
+ * If the brief never arrived, there is nothing to make up: it warns with the
+ * resend link and waits. Guessing would mean delivering anything and
+ * anchoring its hash, which is worse than not delivering.
  *
- * «MIRADA» NO ES «RESUELTA», y confundirlas costó dos tareas de verdad.
+ * "LOOKED AT" IS NOT "RESOLVED", and mixing them up cost two real tasks.
  *
- * La marca guarda hasta dónde se ha ENUMERADO, no hasta dónde se ha resuelto.
- * Antes se escribía al final de cada ronda pasara lo que pasara, así que una
- * tarea que fallaba a mitad —el modelo colgado, el RPC caído— se quedaba por
- * detrás de la marca y no volvía a mirarse nunca. Y lo que la recordaba vivía
- * solo en memoria, o sea que un reinicio conservaba la mitad optimista (la
- * marca, en disco) y perdía la otra (los pendientes, en RAM).
+ * The marker stores how far tasks have been ENUMERATED, not how far they have
+ * been resolved. It used to be written at the end of every round no matter
+ * what, so a task that failed halfway —the model hanging, the RPC down— was
+ * left behind the marker and never looked at again. And whatever remembered
+ * it lived only in memory, so a restart kept the optimistic half (the marker,
+ * on disk) and lost the other (the pending list, in RAM).
  *
- * Ahora las dos cosas viven en el MISMO archivo y se escriben juntas: la marca
- * dice hasta dónde se enumeró, y `pendientes` lleva las excepciones. Una tarea
- * sale de esa lista cuando de verdad se cierra —entregada, completada,
- * cancelada— y no cuando se intentó algo con ella.
+ * Now both live in the SAME file and are written together: the marker says
+ * how far enumeration went, and `pendientes` carries the exceptions. A task
+ * leaves that list when it is really closed —delivered, completed,
+ * cancelled— and not when something was attempted with it.
  *
- * SE SONDEA, NO SE ESCUCHAN EVENTOS. `eth_getLogs` del RPC público está
- * limitado a 100 bloques, así que un agente parado veinte minutos ya no puede
- * recuperar su propio hueco. Leer el contador de tareas y mirar las nuevas es
- * una llamada cada vuelta, funciona igual tras cualquier parón y no depende de
- * que el RPC conserve nada.
+ * IT POLLS, IT DOES NOT LISTEN FOR EVENTS. `eth_getLogs` on the public RPC is
+ * limited to 100 blocks, so an agent stopped for twenty minutes can no longer
+ * recover its own gap. Reading the task counter and looking at the new ones
+ * is one call per round, works the same after any downtime and does not
+ * depend on the RPC keeping anything.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -50,119 +51,121 @@ import { TaskStatus, type PanalClient } from '@panal/sdk';
 
 export interface VigilanteDeps {
   panal: PanalClient;
-  /** La dirección de este agente. */
+  /** This agent's address. */
   yo: Address;
-  /** Dónde guardar hasta dónde se miró. */
+  /** Where to store how far it looked. */
   dataDir: string;
   /**
-   * Trabaja una tarea de la que YA se tiene el encargo.
+   * Works a task whose brief is ALREADY at hand.
    *
-   * Devuelve si la ENTREGÓ, y ese booleano es media corrección de este archivo.
-   * `work()` está escrito para no lanzar nunca —una tarea rota no puede tumbar
-   * la ronda entera—, así que desde aquí un reintento que funcionó y uno que
-   * volvió a reventar por límite de uso se veían exactamente igual: sin error.
-   * El vigilante daba por buena la tarea y dejaba de mirarla.
+   * Returns whether it DELIVERED, and that boolean is half the fix in this
+   * file. `work()` is written to never throw —one broken task must not take
+   * down the whole round—, so from here a retry that worked and one that blew
+   * up again on a usage limit looked exactly the same: no error. The watchdog
+   * considered the task done and stopped looking at it.
    *
-   * Y no vale con relanzar el error: `work()` también sale limpio cuando la
-   * tarea espera adjuntos que no han llegado, que tampoco es haberla resuelto.
-   * Hace falta que lo diga, no que se deduzca de que nadie protestó.
+   * And rethrowing the error is not enough: `work()` also exits cleanly when
+   * the task is waiting for attachments that have not arrived, which is not
+   * resolving it either. It has to say so, not be inferred from nobody
+   * complaining.
    */
   trabajar: (taskId: bigint, brief: string) => Promise<boolean>;
   /**
-   * ¿Se está trabajando esa tarea AHORA MISMO?
+   * Is that task being worked on RIGHT NOW?
    *
-   * Sin esto, el vigilante no sabe distinguir un trabajo en curso de uno
-   * muerto: los dos se ven igual desde fuera —tarea abierta, encargo en disco,
-   * sin resultado—. Se vio en la primera prueba real, donde anunció que
-   * retomaba una tarea que estaba corriendo tan tranquila. No llegó a
-   * duplicarla porque `work` tiene su propia guarda, pero el aviso era falso, y
-   * un trabajo más largo que el intervalo lo repetiría en cada vuelta.
+   * Without this, the watchdog cannot tell a job in progress from a dead one:
+   * both look the same from outside —open task, brief on disk, no result—. It
+   * showed up in the first real test, where it announced it was resuming a
+   * task that was running along just fine. It did not duplicate it because
+   * `work` has its own guard, but the warning was false, and a job longer than
+   * the interval would repeat it every round.
    */
   enCurso: (taskId: bigint) => boolean;
-  /** El encargo recibido, si se guardó. */
+  /** The received brief, if it was stored. */
   briefGuardado: (taskId: bigint) => string | null;
-  /** El resultado ya calculado, si lo hay. */
+  /** The already computed result, if any. */
   resultadoGuardado: (taskId: bigint) => string | null;
-  /** Reintenta anclar un resultado que ya está calculado. */
+  /** Retries anchoring a result that is already computed. */
   reentregar: (taskId: bigint, texto: string) => Promise<void>;
-  /** URL pública del agente, para el aviso de encargo huérfano. */
+  /** The agent's public URL, for the orphaned-brief warning. */
   urlPublica?: string;
 }
 
-/** Cada cuánto se mira cuando hay movimiento, en segundos. */
+/** How often it looks when there is activity, in seconds. */
 const CADA = (() => {
   const n = Number(process.env.VIGILANTE_SEGUNDOS?.trim() || '60');
-  // Menos de 15 s no aporta nada y sí gasta el límite del RPC.
+  // Under 15 s adds nothing and does burn the RPC limit.
   return Number.isFinite(n) && n >= 15 ? Math.floor(n) : 60;
 })();
 
 /**
- * Cuántas vueltas en blanco antes de bajar el ritmo, y a cuánto se baja.
+ * How many empty rounds before slowing down, and how far it slows.
  *
- * Un agente parado pregunta `getTaskCount()` cada 60 s aunque no pase nada.
- * Una gota. Pero el RPC público es COMPARTIDO y corta cerca de 50 llamadas
- * concurrentes: con mil agentes son 16,7 llamadas/s permanentes, y entre
- * todos ahogan el pozo del que bebe también el indexador — que es de quien
- * depende el catálogo entero del mercado.
+ * An idle agent asks `getTaskCount()` every 60 s even if nothing happens. A
+ * drop. But the public RPC is SHARED and cuts off at around 50 concurrent
+ * calls: with a thousand agents that is 16.7 calls/s permanently, and
+ * together they drain the well the indexer also drinks from — and the
+ * indexer is what the whole market catalogue depends on.
  *
- * Así que tras un rato sin encontrar nada —el caso normal— se pasa a mirar
- * cada cinco minutos. Al primer hallazgo se vuelve al ritmo corto.
+ * So after a while without finding anything —the normal case— it switches to
+ * looking every five minutes. At the first finding it goes back to the short
+ * pace.
  *
- * Lo que cuesta: un encargo perdido se detecta en cinco minutos en vez de en
- * uno. Los plazos se miden en horas, así que no cambia nada para nadie.
+ * What it costs: a lost brief is detected in five minutes instead of one.
+ * Deadlines are measured in hours, so it changes nothing for anyone.
  */
 const VUELTAS_EN_BLANCO = 20;
 const CADA_TRANQUILO = Math.max(CADA, 300);
 
 /**
- * Cuánto se espera antes de dar por perdido un encargo.
+ * How long to wait before considering a brief lost.
  *
- * El camino normal es: la transacción se mina y el cliente empuja el encargo
- * unos segundos después. Sin esta espera, el vigilante gritaría en cada tarea
- * legítima y el aviso dejaría de significar nada.
+ * The normal path is: the transaction is mined and the client pushes the
+ * brief a few seconds later. Without this wait, the watchdog would shout on
+ * every legitimate task and the warning would stop meaning anything.
  */
 const GRACIA_MS = 3 * 60 * 1000;
 
-/** Cuántas tareas hacia atrás se miran al arrancar sin marca previa. */
+/** How many tasks back are looked at on a first start with no marker. */
 const REPASO_INICIAL = 50n;
 
 /**
- * Tope de la lista de pendientes.
+ * Cap on the pending list.
  *
- * Una tarea sale de la lista cuando se cierra —entregada, completada,
- * cancelada—, y todas acaban cerrándose: al vencer el plazo el cliente
- * recupera su dinero y la tarea deja de estar abierta. Aun así el tope existe
- * porque nadie OBLIGA al cliente a cancelar: una tarea abandonada puede
- * quedarse abierta para siempre, y sin tope el archivo crecería sin fin.
+ * A task leaves the list when it closes —delivered, completed, cancelled—,
+ * and they all end up closing: when the deadline expires the client gets
+ * their money back and the task is no longer open. The cap exists anyway
+ * because nothing FORCES the client to cancel: an abandoned task can stay
+ * open forever, and without a cap the file would grow without end.
  *
- * Al recortar se tiran las más VIEJAS, que son las que menos se pueden
- * recuperar, y se dice en voz alta. Callarlo sería repetir el fallo que este
- * archivo viene a arreglar.
+ * When trimming, the OLDEST ones are dropped, which are the least
+ * recoverable, and it is said out loud. Keeping quiet would repeat the very
+ * failure this file is here to fix.
  */
 const MAX_PENDIENTES = 500;
 
-/** Qué se sabe de una tarea tras mirarla. «Se intentó» no es un veredicto. */
+/** What is known about a task after looking at it. "Attempted" is not a verdict. */
 type Veredicto = 'resuelta' | 'pendiente';
 
 export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
   if (process.env.VIGILANTE === 'off') {
-    console.log('Vigilante desactivado (VIGILANTE=off).');
+    console.log('Watchdog disabled (VIGILANTE=off).');
     return { parar: () => {} };
   }
 
   const estadoPath = join(deps.dataDir, 'vigilante.json');
   /**
-   * Cuándo se vio por primera vez una tarea sin encargo.
+   * When a task with no brief was first seen.
    *
-   * Esto SÍ puede vivir solo en memoria: solo sirve para el margen de gracia
-   * antes de gritar, y perderlo en un reinicio únicamente reinicia esa cuenta
-   * atrás. Lo que no puede vivir solo en memoria es la lista de pendientes, y
-   * por eso está aparte.
+   * This CAN live only in memory: it only serves the grace period before
+   * shouting, and losing it on a restart just restarts that countdown. What
+   * cannot live only in memory is the pending list, which is why it is kept
+   * apart.
    */
   const vistas = new Map<string, number>();
-  /** De las que ya se avisó, para no repetir el aviso cada vuelta. */
+  /** Already warned about, so the warning is not repeated every round. */
   const avisadas = new Set<string>();
-  /** De los encargos guardados que no cuadran, para no repetir la queja. */
+  /** Stored briefs that do not match, so the complaint is not repeated. */
   const quejadas = new Set<string>();
   let parado = false;
 
@@ -178,12 +181,12 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
         pendientes?: string[];
       };
       return {
-        // -1 y no 0: sin marca hay que hacer el repaso inicial.
+        // -1 and not 0: without a marker the initial sweep has to run.
         visto: raw.visto === undefined ? -1n : BigInt(raw.visto),
-        // Un archivo de la versión anterior no trae la lista. Se lee como
-        // vacía y la primera ronda la vuelve a poblar con lo que siga abierto
-        // por delante de la marca; lo que quedó huérfano por detrás hay que
-        // recuperarlo a mano, que es exactamente el destrozo que esto corrige.
+        // A file from the previous version has no list. It is read as empty
+        // and the first round fills it again with whatever is still open ahead
+        // of the marker; whatever was orphaned behind it has to be recovered
+        // by hand, which is exactly the damage this fixes.
         pendientes: new Set(raw.pendientes ?? []),
       };
     } catch {
@@ -192,42 +195,42 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
   };
 
   /**
-   * Las dos cosas se escriben JUNTAS, y ahí está la corrección.
+   * Both things are written TOGETHER, and that is the fix.
    *
-   * Antes la marca iba a disco y los pendientes se quedaban en RAM, así que un
-   * reinicio guardaba la mitad que dice «ya miré» y perdía la que dice «pero
-   * esto sigue sin resolver». En un solo archivo no puede pasar.
+   * The marker used to go to disk and the pending list stayed in RAM, so a
+   * restart kept the half that says "already looked" and lost the one that
+   * says "but this is still unresolved". In a single file that cannot happen.
    */
   const escribirEstado = (visto: bigint, pendientes: Set<string>): void => {
     let lista = [...pendientes];
     if (lista.length > MAX_PENDIENTES) {
-      // Ordenadas por id: las más viejas primero, que son las que se tiran.
+      // Sorted by id: the oldest first, which are the ones dropped.
       lista.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
       const tiradas = lista.slice(0, lista.length - MAX_PENDIENTES);
       lista = lista.slice(-MAX_PENDIENTES);
       console.error(
-        `[vigilante] la lista de pendientes pasó de ${MAX_PENDIENTES}: dejo de seguir ` +
-          `${tiradas.length} tarea(s) vieja(s) (#${tiradas[0]}…#${tiradas[tiradas.length - 1]}). ` +
-          'Míralas a mano si alguna sigue abierta.',
+        `[watchdog] the pending list went over ${MAX_PENDIENTES}: no longer tracking ` +
+          `${tiradas.length} old task(s) (#${tiradas[0]}…#${tiradas[tiradas.length - 1]}). ` +
+          'Check them by hand if any is still open.',
       );
     }
     try {
       writeFileSync(estadoPath, JSON.stringify({ visto: visto.toString(), pendientes: lista }, null, 2));
     } catch (err) {
-      // Perder el estado cuesta repetir el repaso, así que no se para nada.
-      console.error(`[vigilante] no se pudo guardar el estado: ${err instanceof Error ? err.message : err}`);
+      // Losing the state costs repeating the sweep, so nothing stops.
+      console.error(`[watchdog] could not save the state: ${err instanceof Error ? err.message : err}`);
     }
   };
 
-  /** true si encontro algo que atender: eso es lo que decide el ritmo. */
+  /** true if it found something to handle: that is what sets the pace. */
   async function repasar(): Promise<boolean> {
     const total = await deps.panal.getTaskCount();
     const { visto, pendientes } = leerEstado();
-    // La primera vez se miran las últimas REPASO_INICIAL en vez de las 30.000
-    // que pueda haber: las viejas están cerradas y no cambian.
+    // The first time it looks at the last REPASO_INICIAL instead of the 30,000
+    // there may be: old ones are closed and do not change.
     const desde = visto >= 0n ? visto + 1n : total > REPASO_INICIAL ? total - REPASO_INICIAL : 0n;
 
-    // Las nuevas, más las que quedaron sin resolver de vueltas anteriores.
+    // The new ones, plus those left unresolved from previous rounds.
     const aMirar = new Set<string>(pendientes);
     for (let i = desde; i < total; i++) aMirar.add(i.toString());
     if (aMirar.size === 0) {
@@ -235,13 +238,14 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
       return false;
     }
 
-    // Se PARTE de que todas siguen pendientes y solo sale la que devuelva un
-    // veredicto de resuelta. Antes era al revés —dentro salvo que alguien se
-    // quejara— y por eso un fallo a mitad equivalía a un éxito.
+    // It STARTS from all of them still pending and only the one returning a
+    // resolved verdict leaves. It used to be the other way round —in unless
+    // someone complained— and that is why a failure halfway counted as a
+    // success.
     const restantes = new Set<string>(aMirar);
     for (const id of aMirar) {
-      // `break` y no `return`: hay que guardar lo que sí se llegó a resolver,
-      // y sobre todo lo que no.
+      // `break` and not `return`: what did get resolved has to be saved, and
+      // above all what did not.
       if (parado) break;
       const taskId = BigInt(id);
       let veredicto: Veredicto = 'pendiente';
@@ -249,13 +253,14 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
         veredicto = await revisarUna(taskId);
       } catch (err) {
         console.error(
-          `[vigilante] #${taskId}: ${err instanceof Error ? err.message : err} — sigue pendiente`,
+          `[watchdog] #${taskId}: ${err instanceof Error ? err.message : err} — still pending`,
         );
       }
       if (veredicto === 'resuelta') restantes.delete(id);
     }
     escribirEstado(total - 1n, restantes);
-    // Habia algo que mirar, aunque no fuera nuestro: no es una vuelta en blanco.
+    // There was something to look at, even if it was not ours: not an empty
+    // round.
     return true;
   }
 
@@ -263,13 +268,13 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
     const task = await deps.panal.getTask(taskId);
     const id = taskId.toString();
 
-    // No es mía: no hay nada que resolver y no hará falta volver a mirarla.
+    // Not mine: nothing to resolve and no need to look at it again.
     if (task.worker.toLowerCase() !== deps.yo.toLowerCase()) {
       vistas.delete(id);
       return 'resuelta';
     }
-    // Cerrada en la cadena —entregada, completada, disputada o cancelada—.
-    // ESTA es la única salida buena de la lista: lo dice el escrow, no nosotros.
+    // Closed on-chain —delivered, completed, disputed or cancelled—. THIS is
+    // the only good way out of the list: the escrow says so, not us.
     if (task.status !== TaskStatus.Open) {
       vistas.delete(id);
       avisadas.delete(id);
@@ -277,65 +282,68 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
       return 'resuelta';
     }
 
-    // Se está trabajando ahora mismo: no es un hueco, es el camino normal. Ni
-    // se retoma, ni se avisa de que falte el encargo — lo tiene y lo está
-    // usando. El vigilante solo se ocupa de lo que ya no se mueve.
+    // Being worked on right now: not a hole, it is the normal path. It is
+    // neither resumed nor warned about a missing brief — it has it and is
+    // using it. The watchdog only deals with what no longer moves.
     //
-    // PERO SIGUE PENDIENTE. Antes esto la sacaba de la lista, y era el mismo
-    // fallo con otro disfraz: si ese trabajo en curso acababa reventando, la
-    // marca ya había pasado por encima y no volvía a mirarla nadie.
+    // BUT IT STAYS PENDING. This used to remove it from the list, and it was
+    // the same failure in another disguise: if that job in progress ended up
+    // blowing up, the marker had already moved past it and nobody looked at
+    // it again.
     if (deps.enCurso(taskId)) {
       vistas.delete(id);
       return 'pendiente';
     }
 
-    // CASO 3: el resultado está calculado y la tarea sigue abierta, así que la
-    // entrega no llegó a anclarse. Se reintenta, que es gratis para el cliente
-    // y le devuelve una tarea que daba por perdida.
+    // CASE 3: the result is computed and the task is still open, so the
+    // delivery never got anchored. It is retried, which is free for the
+    // client and gives back a task they had written off.
     //
-    // Si `reentregar` falla, lanza: sube a `repasar`, que la deja pendiente.
+    // If `reentregar` fails, it throws: up to `repasar`, which leaves it
+    // pending.
     const resultado = deps.resultadoGuardado(taskId);
     if (resultado !== null) {
-      console.log(`[vigilante] #${taskId} tenía resultado sin anclar: se reintenta la entrega`);
+      console.log(`[watchdog] #${taskId} had an unanchored result: retrying the delivery`);
       await deps.reentregar(taskId, resultado);
       vistas.delete(id);
       return 'resuelta';
     }
 
-    // CASO 2: el encargo está guardado pero no hay resultado, o sea que el
-    // trabajo se quedó a medias. Se retoma.
+    // CASE 2: the brief is stored but there is no result, so the job was
+    // left half done. It is resumed.
     const brief = deps.briefGuardado(taskId);
     if (brief !== null) {
-      // Se comprueba el hash ANTES de trabajar. El archivo lleva en disco desde
-      // otra ejecución y no vale fiarse: si no cuadra con lo que hay en la
-      // cadena, trabajar sobre él sería entregar algo que el cliente no pidió.
+      // The hash is checked BEFORE working. The file has been on disk since
+      // another run and cannot be trusted: if it does not match what is
+      // on-chain, working on it would deliver something the client did not
+      // ask for.
       if (keccak256(toBytes(brief)) !== task.taskHash) {
-        // Pendiente, NO resuelta: el cliente todavía puede reenviar el bueno
-        // por /reenviar y entonces sí se puede trabajar. Se queja una sola vez
-        // para no llenar el log en cada vuelta.
+        // Pending, NOT resolved: the client can still resend the right one
+        // via /reenviar and then it can be worked on. It complains only once
+        // so as not to fill the log every round.
         if (!quejadas.has(id)) {
           quejadas.add(id);
           console.error(
-            `[vigilante] #${taskId} el encargo guardado NO cuadra con el taskHash de la cadena: ` +
-              'no se trabaja sobre él. Que el cliente lo reenvíe.',
+            `[watchdog] #${taskId} the stored brief does NOT match the on-chain taskHash: ` +
+              'not working on it. The client should resend it.',
           );
         }
         return 'pendiente';
       }
-      console.log(`[vigilante] #${taskId} se quedó a medias: se retoma el trabajo`);
+      console.log(`[watchdog] #${taskId} was left half done: resuming the job`);
       const entregada = await deps.trabajar(taskId, brief);
       vistas.delete(id);
-      // AQUÍ vivía el segundo fallo: se daba por resuelta sin mirar si lo
-      // estaba. Un modelo que devuelve 429 dos veces seguidas se veía igual
-      // que una entrega perfecta.
+      // HERE lived the second failure: it was taken as resolved without
+      // checking whether it was. A model returning 429 twice in a row looked
+      // the same as a perfect delivery.
       if (!entregada) {
-        console.log(`[vigilante] #${taskId} no quedó entregada: sigue en la lista para la próxima vuelta`);
+        console.log(`[watchdog] #${taskId} was not delivered: it stays on the list for the next round`);
       }
       return entregada ? 'resuelta' : 'pendiente';
     }
 
-    // CASO 1: hay tarea y no hay encargo. Aquí no se puede hacer nada más que
-    // avisar: el texto no está en la cadena y adivinarlo sería inventárselo.
+    // CASE 1: there is a task and no brief. Nothing can be done here except
+    // warn: the text is not on-chain and guessing it would mean making it up.
     const visto = vistas.get(id);
     if (visto === undefined) {
       vistas.set(id, Date.now());
@@ -344,36 +352,36 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
     if (Date.now() - visto < GRACIA_MS || avisadas.has(id)) return 'pendiente';
 
     avisadas.add(id);
-    // En cuánto vence, no cuándo. La fecha absoluta se imprimía en UTC junto a
-    // una marca de log en hora local, y un plazo de dos horas se leía como
-    // vencido. Lo que hace falta saber aquí es cuánto margen queda.
+    // How long until it expires, not when. The absolute date was printed in
+    // UTC next to a log timestamp in local time, and a two-hour deadline read
+    // as expired. What matters here is how much margin is left.
     const restanMin = Math.round((Number(task.deadline) * 1000 - Date.now()) / 60000);
     const vence =
       restanMin <= 0
-        ? 'YA VENCIDO'
+        ? 'ALREADY EXPIRED'
         : restanMin < 60
-          ? `en ${restanMin} min`
-          : `en ${Math.floor(restanMin / 60)} h ${restanMin % 60} min`;
+          ? `in ${restanMin} min`
+          : `in ${Math.floor(restanMin / 60)} h ${restanMin % 60} min`;
     console.error(
-      `[vigilante] #${taskId} PAGADA Y SIN ENCARGO. ${task.client} bloqueó su pago hace más de ` +
-        `${Math.round(GRACIA_MS / 60000)} min y el texto no ha llegado nunca. No se puede adivinar: el escrow ` +
-        `solo guarda su hash.\n` +
-        `  Que lo reenvíe desde ${deps.urlPublica ? `${deps.urlPublica}/reenviar?task=${taskId}` : 'tu /reenviar'}` +
-        ` o desde https://panal.lat/dashboard.\n` +
-        `  Si nadie lo hace, el plazo vence ${vence} y el cliente recupera su dinero.`,
+      `[watchdog] #${taskId} PAID AND WITH NO BRIEF. ${task.client} locked their payment more than ` +
+        `${Math.round(GRACIA_MS / 60000)} min ago and the text never arrived. It cannot be guessed: the escrow ` +
+        `only stores its hash.\n` +
+        `  They should resend it from ${deps.urlPublica ? `${deps.urlPublica}/reenviar?task=${taskId}` : 'your /reenviar'}` +
+        ` or from https://panal.lat/dashboard.\n` +
+        `  If nobody does, the deadline expires ${vence} and the client gets their money back.`,
     );
-    // Sigue abierta y sin encargo: se queda en la lista hasta que la cadena
-    // diga otra cosa.
+    // Still open and with no brief: it stays on the list until the chain
+    // says otherwise.
     return 'pendiente';
   }
 
-  console.log(`Vigilante activo: repasa cada ${CADA} s (VIGILANTE=off para apagarlo).`);
-  // Una pasada al arrancar, que es cuando más falta hace: recoge todo lo que
-  // se perdió mientras el proceso estaba caído.
-  void repasar().catch((err) => console.error(`[vigilante] primer repaso: ${err instanceof Error ? err.message : err}`));
+  console.log(`Watchdog active: sweeps every ${CADA} s (VIGILANTE=off to turn it off).`);
+  // One pass at startup, which is when it is needed most: it picks up
+  // everything lost while the process was down.
+  void repasar().catch((err) => console.error(`[watchdog] first sweep: ${err instanceof Error ? err.message : err}`));
 
-  // El ritmo se reprograma en vez de usar un intervalo fijo: así puede
-  // aflojar solo cuando lleva un rato sin encontrar nada.
+  // The pace is rescheduled instead of using a fixed interval: that way it
+  // can slow down on its own after a while of finding nothing.
   let enBlanco = 0;
   let tranquilo = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -385,27 +393,27 @@ export function arrancarVigilante(deps: VigilanteDeps): { parar: () => void } {
         try {
           hizoAlgo = await repasar();
         } catch (err) {
-          console.error(`[vigilante] ${err instanceof Error ? err.message : err}`);
+          console.error(`[watchdog] ${err instanceof Error ? err.message : err}`);
         }
 
         if (hizoAlgo) {
           enBlanco = 0;
           if (tranquilo) {
             tranquilo = false;
-            console.log(`[vigilante] hay movimiento: vuelvo a mirar cada ${CADA} s`);
+            console.log(`[watchdog] activity detected: back to looking every ${CADA} s`);
           }
         } else if (++enBlanco >= VUELTAS_EN_BLANCO && !tranquilo) {
           tranquilo = true;
           console.log(
-            `[vigilante] ${VUELTAS_EN_BLANCO} vueltas sin nada: paso a mirar cada ${CADA_TRANQUILO} s ` +
-              'para no cargar el RPC compartido. Vuelvo al ritmo corto en cuanto haya algo.',
+            `[watchdog] ${VUELTAS_EN_BLANCO} rounds with nothing: switching to every ${CADA_TRANQUILO} s ` +
+              'to spare the shared RPC. Back to the short pace as soon as something shows up.',
           );
         }
         if (!parado) programar((tranquilo ? CADA_TRANQUILO : CADA) * 1000);
       })();
     }, ms);
-    // Sin unref, este temporizador mantiene vivo el proceso para siempre
-    // aunque todo lo demás haya terminado.
+    // Without unref, this timer keeps the process alive forever even when
+    // everything else has finished.
     timer.unref?.();
   };
   programar(CADA * 1000);
